@@ -1,0 +1,55 @@
+#!/bin/bash
+# =============================================================================
+# Back up the world, and prune old ones.
+# =============================================================================
+# Retention is exercised by a test rather than trusted to the setting: a
+# retention policy that has never dropped anything is a guess.
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+
+MAX_COUNT="${BACKUPS_MAX_COUNT:-10}"
+
+install -d -m 0755 "${BACKUPS_PATH}"
+
+stamp="$(date -u +%Y%m%d_%H%M%S)"
+archive="${BACKUPS_PATH}/${GAME_ID}_${stamp}.tar.gz"
+
+# SAVE_PATHS is relative to /config, which is the volume an operator keeps.
+sources=()
+IFS=',' read -ra entries <<< "${SAVE_PATHS}"
+for entry in "${entries[@]}"; do
+    entry="${entry// /}"
+    [[ -z "${entry}" ]] && continue
+    if [[ -e "${CONFIG_PATH}/${entry}" ]]; then
+        sources+=("${entry}")
+    fi
+done
+
+if [[ ${#sources[@]} -eq 0 ]]; then
+    log_warn "No save data at ${CONFIG_PATH}/{${SAVE_PATHS}} yet; nothing to back up"
+    exit 0
+fi
+
+log_info "Backing up ${sources[*]} to ${archive}"
+if tar -czf "${archive}" -C "${CONFIG_PATH}" "${sources[@]}"; then
+    log_success "Backup written ($(du -h "${archive}" | cut -f1))"
+else
+    log_error "Backup failed; removing the partial archive"
+    rm -f "${archive}"
+    exit 1
+fi
+
+# Prune by age, newest kept. Grouping the find expression matters: without the
+# parentheses the -name filter applies to only one branch and nothing ages out.
+mapfile -t archives < <(find "${BACKUPS_PATH}" -maxdepth 1 -type f \
+    \( -name "${GAME_ID}_*.tar.gz" \) -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+
+if [[ ${#archives[@]} -gt ${MAX_COUNT} ]]; then
+    for stale in "${archives[@]:${MAX_COUNT}}"; do
+        log_info "Pruning ${stale}"
+        rm -f "${stale}"
+    done
+fi
+
+log_success "${MAX_COUNT} most recent backups kept"

@@ -1,61 +1,74 @@
-# absolute-server-template
+# absolute-satisfactory-server
 
-The template every Absolute game server image starts from. Press **Use this
-template**, fill in `manifest.env`, write the game's quirks, and you have a
-server image that already meets the
+A containerized dedicated server for **Satisfactory**, built from
+[absolute-server-template](https://github.com/abspwgm/absolute-server-template)
+and conforming to the
 [Absolute engineering standard](https://github.com/abspwgm/.github).
 
-It exists because the alternative is fifty diverging copies of the same update
-logic — and the update logic is the part that most needs to be right.
+**New to this? Start here: [docs/INSTALL.md](docs/INSTALL.md)** — written for
+someone who has never used Docker, a terminal or a router's settings page.
 
-## What you get
+## Quick start
 
-| | |
-|---|---|
-| [`manifest.env`](manifest.env) | Everything that differs between one game and another. Validated at start; a placeholder app id or a wrong stop signal stops the container rather than being guessed. |
-| [`scripts/common`](scripts/common) | The shared library: logging, paths, process matching, the credential guard, pinned downloads, SteamCMD build ids. Game-agnostic by construction. |
-| [`scripts/manifest`](scripts/manifest) | Loads and validates the manifest. Fails closed. |
-| [`tests/unit/`](tests/unit) | The fast tier. No Docker, no network, under a second, and it fails when any of the above stops being true. |
-| [`.absolute/policy.yml`](.absolute/policy.yml) | This repository's answers to the standard, which your game repo inherits and edits. |
+```yaml
+services:
+  satisfactory:
+    image: ghcr.io/abspwgm/absolute-satisfactory-server:latest
+    container_name: satisfactory-server
+    restart: unless-stopped
+    stop_grace_period: 180s
+    ports:
+      - "7777:7777/udp"
+      - "7777:7777/tcp"
+      - "127.0.0.1:8888:8888/tcp"
+    volumes:
+      - satisfactory-server:/opt/satisfactory/server
+      - satisfactory-config:/config
 
-## Starting a new game
-
-1. **Use this template** on GitHub, named `absolute-<game>-server`.
-2. Fill in `manifest.env`. Every field is documented in place; the ones that
-   bite are `STOP_SIGNAL` (the wrong one corrupts saves), `READY_LOG_PATTERN`
-   (the difference between a health check that works and one that lies) and the
-   public/private port split.
-3. Run `bash tests/run_unit.sh`. It fails until the manifest is real.
-4. Add the game's quirks in `scripts/quirks`, not in `scripts/common`. If you
-   find yourself writing `if [[ "${GAME_ID}" == ... ]]` in the shared library,
-   the value belongs in the manifest.
-5. Work through [`CHECKLIST.md`](CHECKLIST.md). A game ships when every item is
-   done, not when it boots once.
-
-## What the manifest replaces
-
-The three original images — Valheim, Rust, Palworld — were the same program with
-the constants swapped: the app id, the binary name, the process name, the stop
-signal, the ready line, the ports, the save paths. Those are now data:
+volumes:
+  satisfactory-server:
+  satisfactory-config:
+```
 
 ```sh
-GAME_ID=satisfactory            STEAM_APP_ID=1690800
-STEAM_PLATFORM=linux            STEAM_BRANCH=public
-SERVER_PROCESS=FactoryServer    READY_LOG_PATTERN='Server startup complete'
-PUBLIC_PORTS=7777/udp           STOP_SIGNAL=INT
-SAVE_PATHS=saved                SNAPSHOT_PATHS=/opt/satisfactory/server
+docker compose up -d
 ```
+
+The first start downloads the server and generates a world, which takes a
+while. `docker ps` shows `(healthy)` when players can join.
+
+## Ports
+
+| Port | Protocol | Purpose | Forward on your router? |
+|---|---|---|---|
+| 7777 | UDP | Game traffic | Yes |
+| 7777 | TCP | Game messaging | Yes |
+| 8888 | TCP | Management API | **No — keep private** |
+
+## Settings
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SERVER_PORT` | `7777` | Game port |
+| `UPDATE_ON_START` | `true` | Take the newest game build when the container starts |
+| `BACKUPS_ENABLED` | `true` | Hourly world backups |
+| `BACKUPS_MAX_COUNT` | `10` | How many backups to keep |
+| `SERVER_EXTRA_ARGS` | (empty) | Extra arguments passed to the server |
+| `TZ` | `Etc/UTC` | Timezone for logs and schedules |
 
 ## Status
 
-The shared library, the manifest and the fast tier are here and tested. The
-container layer — `Dockerfile`, the compose files, the end-to-end suite, the
-publish and build-watch workflows — lands with the first real game generated
-from this template, because the standard does not let a thing be called proven
-until a suite has passed on it. See the exceptions in
-[`.absolute/policy.yml`](.absolute/policy.yml), which say exactly that, with
-dates.
+**Not yet released.** The container layer is new — this is the first game built
+from the template — and two values in
+[`manifest.env`](manifest.env) are marked UNVERIFIED until the first green
+end-to-end run confirms them: the server's process name and the log line that
+means "players can join".
+
+Open exceptions are recorded with dates in
+[`.absolute/policy.yml`](.absolute/policy.yml): no snapshot/hold/rollback yet,
+no scheduled build watch, and no published image. The remaining work is in
+[CHECKLIST.md](CHECKLIST.md).
 
 ## Licence
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).

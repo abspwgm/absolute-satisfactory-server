@@ -1,0 +1,181 @@
+# =============================================================================
+# End-to-end suite
+# =============================================================================
+# Written with the things the Valheim and Rust images learned the hard way
+# already in place, rather than discovered here:
+#
+#   - fork pull requests never run on our own hardware
+#   - the suite is serialised, because the runner pool shares one Docker daemon
+#     and this suite uses fixed container names
+#   - server files are seeded from the runner's local depot cache
+#   - workspace ownership is reclaimed, because a container writing as root
+#     leaves a landmine for the next checkout on a runner that is not discarded
+# =============================================================================
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  # Any base, not just main: a pull request stacked on another branch is still
+  # a change that has to be gated.
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+    inputs:
+      skip_cache:
+        description: 'Skip the server file cache'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  STEAM_APP_ID: '1690800'
+
+jobs:
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Shellcheck every bash script, by shebang
+        run: |
+          shellcheck --version
+          mapfile -t files < <(grep -rl '^#!/bin/bash' scripts tests 2>/dev/null)
+          printf '  %s\n' "${files[@]}"
+          shellcheck -S error -s bash -x "${files[@]}"
+
+      - name: Unit suites (no Docker)
+        run: bash tests/run_unit.sh
+
+      - name: Manifest is valid
+        run: MANIFEST_FILE=manifest.env bash -c 'source scripts/manifest && manifest_load'
+
+  e2e:
+    name: End-to-End Tests
+    # Fork pull requests go to a GitHub-hosted runner, free for public
+    # repositories. Everything else takes the org pool, which holds the Steam
+    # depot cache.
+    runs-on: ${{ fromJSON(
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name != github.repository)
+      && '["ubuntu-latest"]'
+      || '["self-hosted","linux","x64","absolute-e2e"]') }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Create data directories
+        run: mkdir -p data/server data/config
+
+      # On the pool the depot is already on local disk, refreshed by a
+      # root-owned timer no pull request can influence. A copy, never a
+      # hardlink: a hardlink would let a job write through into the cache.
+      - name: Seed server files from the local depot cache
+        id: local-cache
+        if: ${{ runner.environment == 'self-hosted' && github.event.inputs.skip_cache != 'true' }}
+        run: |
+          src="/srv/steam-cache/${{ env.STEAM_APP_ID }}"
+          if [ -d "${src}" ] && [ -n "$(ls -A "${src}" 2>/dev/null)" ]; then
+            cp -a "${src}/." data/server/
+            echo "seeded=true" >> "$GITHUB_OUTPUT"
+            echo "✅ seeded from ${src} ($(du -sh data/server | cut -f1))"
+          else
+            echo "seeded=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ no local depot cache at ${src}; SteamCMD will download"
+          fi
+
+      - name: Build image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: absolute-satisfactory-server:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the suite
+        run: bash tests/run_e2e.sh
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p test-artifacts
+          docker logs satisfactory-server > test-artifacts/container.log 2>&1 || true
+          cp -r data/logs test-artifacts/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-logs
+          path: test-artifacts/
+          retention-days: 7
+
+      # The container writes into data/ as root. On a hosted runner the machine
+      # is discarded; on a self-hosted one the workspace outlives the job and
+      # the next checkout dies with EACCES before anything starts.
+      - name: Reclaim ownership of the workspace
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" data || true
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
+
+  build-only:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: absolute-satisfactory-server:build-test
+
+      # The Rust image shipped for months with steamclient.so unreadable by the
+      # server user, which no build check would have caught. These two would.
+      - name: steamclient.so is readable by the server user
+        run: |
+          docker run --rm --user satisfactory absolute-satisfactory-server:build-test \
+            test -r /home/satisfactory/.steam/sdk64/steamclient.so
+          docker run --rm --user satisfactory absolute-satisfactory-server:build-test \
+            test -r /home/satisfactory/.steam/sdk32/steamclient.so
+
+      - name: supervisor gives the server the right HOME and user
+        run: |
+          docker run --rm absolute-satisfactory-server:build-test \
+            grep -q 'HOME="/home/satisfactory"' /etc/supervisor/conf.d/game.conf
+          docker run --rm absolute-satisfactory-server:build-test \
+            grep -qx 'user=satisfactory' /etc/supervisor/conf.d/game.conf
+
+      - name: the manifest is present and valid inside the image
+        run: |
+          docker run --rm absolute-satisfactory-server:build-test \
+            bash -c 'source /opt/satisfactory/scripts/manifest && MANIFEST_FILE=/opt/manifest.env manifest_load'

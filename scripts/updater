@@ -1,0 +1,50 @@
+#!/bin/bash
+# =============================================================================
+# Install or update the game's server files through SteamCMD.
+# =============================================================================
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+
+ATTEMPTS="${STEAMCMD_ATTEMPTS:-3}"
+
+install_server() {
+    local args=(+force_install_dir "${SERVER_PATH}")
+    args+=(+login "${STEAM_LOGIN}")
+    # shellcheck disable=SC2207  # deliberately word-split: it is a flag or empty
+    args+=($(steam_platform_args))
+    if [[ "${STEAM_BRANCH}" != "public" ]]; then
+        args+=(+app_update "${STEAM_APP_ID}" -beta "${STEAM_BRANCH}" validate)
+    else
+        args+=(+app_update "${STEAM_APP_ID}" validate)
+    fi
+    args+=(+quit)
+
+    # SteamCMD fails transiently on a cold client: "Missing configuration",
+    # exit 8, "state is 0x2". Retrying is the documented behaviour, not a
+    # workaround.
+    local attempt
+    for attempt in $(seq 1 "${ATTEMPTS}"); do
+        log_info "SteamCMD attempt ${attempt}/${ATTEMPTS} for app ${STEAM_APP_ID}"
+        if "${STEAMCMD_PATH}/steamcmd.sh" "${args[@]}"; then
+            return 0
+        fi
+        log_warn "SteamCMD attempt ${attempt} failed"
+        sleep $((attempt * 15))
+    done
+    return 1
+}
+
+if is_update_hold; then
+    log_warn "UPDATE_HOLD is set; refusing to update until it is released"
+    exit 0
+fi
+
+log_info "Updating ${GAME_NAME} (app ${STEAM_APP_ID}, branch ${STEAM_BRANCH})"
+if install_server; then
+    get_installed_build_id > "${SERVER_PATH}/.build_id" 2>/dev/null || true
+    log_success "Update complete (build $(get_installed_build_id))"
+else
+    log_error "Update failed after ${ATTEMPTS} attempts"
+    exit 1
+fi
