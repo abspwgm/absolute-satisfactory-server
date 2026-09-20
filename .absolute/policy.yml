@@ -1,0 +1,169 @@
+# Local policy for absolute-server-template.
+# A game repository generated from this template inherits this file and edits
+# it: the tiers and contract stay, the exceptions below are replaced by that
+# game's real answers.
+project: absolute-server-template
+standard_version: "1.0.0"
+
+audience: >-
+  a maintainer adding a new game who has run one of our images but has never
+  read the shared library, and needs to know which decisions are theirs
+
+contract:
+  - The manifest.env field names and their accepted values
+  - >-
+    The shared library's function names: is_true, is_server_running,
+    server_process_pattern, resolve_admin_credential, fetch_pinned,
+    get_remote_build_id, get_installed_build_id, public_port_list
+  - The path layout /opt/<GAME_ID>, /config, /var/log/<GAME_ID>, /var/run/<GAME_ID>
+  - The TEST_ROOT seam, which every unit test depends on
+  - tests/run_unit.sh as the fast tier's entry point
+
+tiers:
+  fast:
+    gates: push
+    command: bash tests/run_unit.sh
+    budget: under a second
+  merge:
+    gates: merge
+    command: shellcheck -S error -s bash -x scripts/* tests/*.sh tests/unit/*.sh && bash tests/run_unit.sh
+    budget: under a minute
+  release:
+    gates: release
+    command: bash tests/run_unit.sh
+    budget: >-
+      the release tier is the generated game repository's end-to-end suite;
+      this repository has no artifact of its own to release
+
+security:
+  layers:
+    L1:
+      requirements:
+        default_branch_protected:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: Applied as a repository ruleset from the governance definitions in the hub repository.
+        required_checks_declared:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/required-checks.json
+          reason: The required check list is declared with the rulesets in the hub repository.
+        secret_scanning_enabled:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-server-template/settings/security_analysis
+          reason: Secret scanning and push protection are repository settings.
+        no_secrets_in_repository: .github/workflows/conformance.yml
+        no_deployment_detail_in_public: SECURITY.md
+        licence_declared: LICENSE
+    L2:
+      requirements:
+        inputs_pinned_immutably: .github/workflows/lint.yml
+        pins_verified_before_use: tests/unit/test_pinned_fetch.sh
+        unpinned_input_refused: tests/unit/test_pinned_fetch.sh
+        pins_move_by_pr:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: The branch ruleset blocks direct pushes, so a pin moves only through a reviewed PR.
+        vulnerable_dependencies_block_release:
+          status: not_applicable
+          reason: >-
+            This repository publishes no artifact. The generated game repository
+            answers this for the image it ships.
+      controls:
+        - id: unpinned-fetch-refused
+          description: >-
+            fetch_pinned refuses to run without both a URL and a sha256, and
+            deletes a mismatching download before anything can use it. Every
+            game image inherits this, so no game can quietly fetch "latest".
+          verified_by: tests/unit/test_pinned_fetch.sh
+    L3:
+      requirements:
+        base_image_from_approved_library:
+          status: exception
+          exception: no-container-layer-yet
+        least_privilege_tokens: .github/workflows/lint.yml
+        no_secrets_in_build_args: .github/workflows/lint.yml
+        ephemeral_runners: .github/workflows/lint.yml
+        fork_pr_cannot_publish:
+          status: not_applicable
+          reason: This repository publishes no artifact, so there is nothing to protect.
+    L4:
+      requirements:
+        provenance_and_sbom_attached:
+          status: not_applicable
+          reason: Nothing is published from here; the template is consumed as source.
+        only_distributable_content:
+          status: not_applicable
+          reason: No artifact is produced.
+        published_only_after_merge_tier:
+          status: not_applicable
+          reason: No artifact is produced.
+    L5:
+      requirements:
+        least_privilege_runtime:
+          status: exception
+          exception: no-container-layer-yet
+        admin_interfaces_private:
+          status: exception
+          exception: no-container-layer-yet
+        default_credentials_refused: tests/unit/test_credentials.sh
+        fail_closed_on_state_destroying_paths: tests/unit/test_manifest.sh
+        honest_health_reporting:
+          status: exception
+          exception: no-container-layer-yet
+      controls:
+        - id: manifest-fails-closed
+          description: >-
+            A missing, placeholder or malformed manifest stops the container
+            rather than being guessed. KILL is refused as a stop signal, because
+            the wrong signal corrupts saves quietly.
+          verified_by: tests/unit/test_manifest.sh
+        - id: credential-guard-inherited
+          description: >-
+            Where the manifest names an admin password variable, an empty or
+            denylisted value is replaced by a generated 32-character one, stored
+            0600 and never logged. Every game with a console inherits it rather
+            than reimplementing it.
+          verified_by: tests/unit/test_credentials.sh
+        - id: process-match-cannot-self-kill
+          description: >-
+            Process matching brackets the second character, so a shell whose own
+            command line contains the pattern does not match it. Without this, a
+            stop script kills the shell that issued it.
+          verified_by: tests/unit/test_process_pattern.sh
+    L6:
+      requirements:
+        snapshot_before_risk:
+          status: exception
+          exception: no-container-layer-yet
+        hold_on_failed_verification:
+          status: exception
+          exception: no-container-layer-yet
+        restore_rehearsed_in_ci:
+          status: exception
+          exception: no-container-layer-yet
+        retention_exercised_by_test:
+          status: exception
+          exception: no-container-layer-yet
+    L7:
+      requirements:
+        scheduled_canary:
+          status: exception
+          exception: no-container-layer-yet
+        one_issue_per_failure_class:
+          status: exception
+          exception: no-container-layer-yet
+        security_policy_published: SECURITY.md
+        findings_kept_private: SECURITY.md
+
+exceptions:
+  - id: no-container-layer-yet
+    reason: >-
+      This repository currently holds the shared library, the manifest and the
+      fast tier. The container layer - Dockerfile, compose files, the five
+      shared end-to-end tests, the disaster drill, publish and build-watch -
+      lands with the first real game generated from the template, because the
+      standard does not let a thing be called proven until a suite has passed on
+      it, and a template with no game cannot run that suite. Every requirement
+      citing this exception is answered by the generated repository today, and
+      will be answered here once the first game proves the layer.
+    expires: "2027-03-31"

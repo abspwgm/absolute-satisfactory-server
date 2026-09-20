@@ -1,0 +1,141 @@
+#!/bin/bash
+# =============================================================================
+# Manifest loading and validation
+# =============================================================================
+# Reads manifest.env and refuses to continue if anything required is missing or
+# malformed. A game server that starts with a guessed stop signal or a fuzzy
+# ready pattern fails later, in a way that costs someone their world, so this
+# fails now instead.
+#
+# Sourced by scripts/common. Not executed directly.
+# =============================================================================
+
+MANIFEST_FILE="${MANIFEST_FILE:-${TEST_ROOT}/opt/manifest.env}"
+
+# Required in every manifest. A game without one of these is not describable.
+MANIFEST_REQUIRED=(
+    GAME_ID
+    GAME_NAME
+    STEAM_APP_ID
+    STEAM_LOGIN
+    STEAM_BRANCH
+    STEAM_PLATFORM
+    SERVER_BINARY
+    SERVER_PROCESS
+    STOP_SIGNAL
+    STOP_TIMEOUT
+    READY_LOG_PATTERN
+    PUBLIC_PORTS
+    SAVE_PATHS
+    SNAPSHOT_PATHS
+)
+
+manifest_error() {
+    # Deliberately not log_error: the manifest loads before the logger exists.
+    echo "[ERROR] manifest: $*" >&2
+}
+
+# Validates the already-sourced manifest variables.
+# Returns 0 when every required value is present and well formed.
+manifest_validate() {
+    local failures=0
+    local name
+
+    for name in "${MANIFEST_REQUIRED[@]}"; do
+        if [[ -z "${!name:-}" ]]; then
+            manifest_error "${name} is required and is empty"
+            failures=$((failures + 1))
+        fi
+    done
+
+    if [[ -n "${GAME_ID:-}" && ! "${GAME_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        manifest_error "GAME_ID '${GAME_ID}' must be lowercase and hyphenated"
+        failures=$((failures + 1))
+    fi
+
+    if [[ -n "${STEAM_APP_ID:-}" && ! "${STEAM_APP_ID}" =~ ^[0-9]+$ ]]; then
+        manifest_error "STEAM_APP_ID '${STEAM_APP_ID}' must be a number"
+        failures=$((failures + 1))
+    fi
+
+    if [[ "${STEAM_APP_ID:-0}" == "0" ]]; then
+        manifest_error "STEAM_APP_ID is still the template's placeholder"
+        failures=$((failures + 1))
+    fi
+
+    case "${STEAM_LOGIN:-}" in
+        anonymous|account) ;;
+        *) manifest_error "STEAM_LOGIN '${STEAM_LOGIN:-}' must be anonymous or account"
+           failures=$((failures + 1)) ;;
+    esac
+
+    case "${STEAM_PLATFORM:-}" in
+        linux|windows) ;;
+        *) manifest_error "STEAM_PLATFORM '${STEAM_PLATFORM:-}' must be linux or windows"
+           failures=$((failures + 1)) ;;
+    esac
+
+    # A wrong stop signal corrupts saves, so only the two that mean "save and
+    # exit" are accepted. KILL is never a stop signal.
+    case "${STOP_SIGNAL:-}" in
+        INT|TERM) ;;
+        *) manifest_error "STOP_SIGNAL '${STOP_SIGNAL:-}' must be INT or TERM"
+           failures=$((failures + 1)) ;;
+    esac
+
+    if [[ -n "${STOP_TIMEOUT:-}" && ! "${STOP_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+        manifest_error "STOP_TIMEOUT '${STOP_TIMEOUT}' must be a number of seconds"
+        failures=$((failures + 1))
+    fi
+
+    manifest_validate_ports PUBLIC_PORTS "${PUBLIC_PORTS:-}" || failures=$((failures + 1))
+    if [[ -n "${PRIVATE_PORTS:-}" ]]; then
+        manifest_validate_ports PRIVATE_PORTS "${PRIVATE_PORTS}" || failures=$((failures + 1))
+    fi
+
+    case "${MOD_SOURCE:-}" in
+        ""|thunderstore|ficsit|workshop|oxide) ;;
+        *) manifest_error "MOD_SOURCE '${MOD_SOURCE}' is not a supported source"
+           failures=$((failures + 1)) ;;
+    esac
+
+    [[ ${failures} -eq 0 ]]
+}
+
+# `port/protocol` pairs, comma-separated. A port table that disagrees with the
+# compose file is the most common way an install guide goes stale, so the shape
+# is checked here and compared against compose by the lint workflow.
+manifest_validate_ports() {
+    local name="$1"
+    local value="$2"
+    local entry
+
+    IFS=',' read -ra entries <<< "${value}"
+    for entry in "${entries[@]}"; do
+        entry="${entry// /}"
+        [[ -z "${entry}" ]] && continue
+        if [[ ! "${entry}" =~ ^[0-9]+(-[0-9]+)?/(tcp|udp)$ ]]; then
+            manifest_error "${name} entry '${entry}' must look like 7777/udp or 27015-27016/tcp"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Sources the manifest and validates it. Fails closed.
+manifest_load() {
+    if [[ ! -r "${MANIFEST_FILE}" ]]; then
+        manifest_error "cannot read ${MANIFEST_FILE}"
+        return 1
+    fi
+
+    # shellcheck disable=SC1090  # path is a manifest chosen at build time
+    source "${MANIFEST_FILE}"
+
+    if ! manifest_validate; then
+        manifest_error "refusing to start with an invalid manifest"
+        return 1
+    fi
+
+    return 0
+}

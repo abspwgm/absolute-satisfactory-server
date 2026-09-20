@@ -1,0 +1,264 @@
+#!/bin/bash
+# =============================================================================
+# Shared library for Absolute game server images
+# =============================================================================
+# Everything here is game-agnostic. What differs per game lives in
+# manifest.env; what is genuinely peculiar to one game lives in scripts/quirks.
+# If you find yourself adding an `if [[ "${GAME_ID}" == ... ]]` here, it belongs
+# in the manifest or in quirks instead.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Colour output helpers
+# -----------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info()    { echo -e "${BLUE}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+
+# -----------------------------------------------------------------------------
+# Manifest
+# -----------------------------------------------------------------------------
+# The in-image layout is fixed. TEST_ROOT is empty in every container and exists
+# only so these scripts can be exercised outside one.
+TEST_ROOT="${TEST_ROOT:-}"
+
+COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/manifest
+source "${COMMON_DIR}/manifest"
+
+manifest_load || exit 1
+
+# -----------------------------------------------------------------------------
+# Paths, derived from the manifest
+# -----------------------------------------------------------------------------
+STEAMCMD_PATH="${TEST_ROOT}/opt/steamcmd"
+GAME_ROOT="${TEST_ROOT}/opt/${GAME_ID}"
+SERVER_PATH="${GAME_ROOT}/server"
+SCRIPTS_PATH="${GAME_ROOT}/scripts"
+CONFIG_PATH="${TEST_ROOT}/config"
+BACKUPS_PATH="${BACKUPS_DIRECTORY:-${CONFIG_PATH}/backups}"
+LOG_PATH="${TEST_ROOT}/var/log/${GAME_ID}"
+PID_PATH="${TEST_ROOT}/var/run/${GAME_ID}"
+
+SERVER_PID_FILE="${PID_PATH}/${GAME_ID}-server.pid"
+SERVER_LOG_FILE="${LOG_PATH}/${GAME_ID}-server.log"
+SERVER_EXECUTABLE="${SERVER_PATH}/${SERVER_BINARY}"
+
+# Disaster-response state lives under /config so it survives an image upgrade.
+DR_PATH="${CONFIG_PATH}/dr"
+DR_SNAPSHOTS_PATH="${DR_PATH}/snapshots"
+DR_HOLD_FLAG="${DR_PATH}/UPDATE_HOLD"
+DR_SAFE_MODE_FLAG="${DR_PATH}/SAFE_MODE"
+DR_LAST_RESTORE="${DR_PATH}/last_restore.json"
+
+MODCHECK_STATUS_FILE="${PID_PATH}/modcheck.json"
+SUPERVISOR_SOCKET="unix://${PID_PATH}/supervisor.sock"
+
+# -----------------------------------------------------------------------------
+# Boolean helper
+# -----------------------------------------------------------------------------
+is_true() {
+    local value="${1:-false}"
+    [[ "${value,,}" == "true" || "${value}" == "1" ]]
+}
+
+is_server_public()           { is_true "${SERVER_PUBLIC:-true}"; }
+is_update_on_start_enabled() { is_true "${UPDATE_ON_START:-true}"; }
+is_backups_enabled()         { is_true "${BACKUPS_ENABLED:-true}"; }
+is_safe_mode()               { [[ -f "${DR_SAFE_MODE_FLAG}" ]]; }
+is_update_hold()             { [[ -f "${DR_HOLD_FLAG}" ]]; }
+
+# -----------------------------------------------------------------------------
+# Process helpers
+# -----------------------------------------------------------------------------
+# The bracket trick matters: a shell whose own command line contains the literal
+# process name would otherwise match itself, and pkill would kill the shell.
+server_process_pattern() {
+    local name="${SERVER_PROCESS}"
+    printf '%s[%s]%s' "${name:0:1}" "${name:1:1}" "${name:2}"
+}
+
+is_server_running() {
+    if [[ -f "${SERVER_PID_FILE}" ]]; then
+        local pid
+        pid=$(cat "${SERVER_PID_FILE}")
+        if kill -0 "${pid}" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    pgrep -f "$(server_process_pattern)" > /dev/null 2>&1
+}
+
+get_server_pid() {
+    if [[ -f "${SERVER_PID_FILE}" ]]; then
+        cat "${SERVER_PID_FILE}"
+    else
+        pgrep -f "$(server_process_pattern)" 2>/dev/null | head -1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Credential guard
+# -----------------------------------------------------------------------------
+# A remote console behind an empty or well-known password is an open console.
+# When the manifest names an admin password variable, an empty or denylisted
+# value is replaced by a generated one, stored 0600 and never logged.
+CREDENTIAL_DENYLIST=("changeme" "password" "your_secure_password" "admin" "adminpassword" "rcon" "secret")
+
+is_default_credential() {
+    local candidate="${1,,}"
+    local denied
+
+    [[ -z "${candidate}" ]] && return 0
+    for denied in "${CREDENTIAL_DENYLIST[@]}"; do
+        [[ "${candidate}" == "${denied}" ]] && return 0
+    done
+    return 1
+}
+
+credential_file_for() {
+    local var_name="$1"
+    echo "${CONFIG_PATH}/${var_name,,}"
+}
+
+# Resolves the manifest's admin password variable in place.
+# Note: this logs to stdout, so never call it via $(...) - read the variable.
+resolve_admin_credential() {
+    local var_name="${ADMIN_PASSWORD_VAR:-}"
+    [[ -z "${var_name}" ]] && return 0
+
+    local current="${!var_name:-}"
+    if ! is_default_credential "${current}"; then
+        return 0
+    fi
+
+    local file
+    file="$(credential_file_for "${var_name}")"
+
+    local stored=""
+    if [[ -r "${file}" ]]; then
+        stored=$(tr -d '\r\n' < "${file}")
+    fi
+    if [[ ${#stored} -ge 24 ]]; then
+        printf -v "${var_name}" '%s' "${stored}"
+        export "${var_name?}"
+        log_info "Using generated ${var_name} from ${file}"
+        return 0
+    fi
+
+    log_warn "${var_name} is empty or a known default, generating a random one"
+
+    # Alphanumeric only, so it is safe on a command line and in an ini file.
+    local generated
+    generated=$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    if [[ ${#generated} -lt 24 ]]; then
+        log_error "Failed to generate ${var_name}"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "${file}")"
+    if ! (umask 077 && echo "${generated}" > "${file}"); then
+        log_error "Failed to write ${file}"
+        return 1
+    fi
+    chmod 600 "${file}"
+    chown "${GAME_ID}:${GAME_ID}" "${file}" 2>/dev/null || true
+
+    printf -v "${var_name}" '%s' "${generated}"
+    export "${var_name?}"
+    log_success "Generated ${var_name} saved to ${file}"
+    log_info "Read it with: docker exec <container> cat ${file}"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Pinned downloads
+# -----------------------------------------------------------------------------
+# Anything fetched at run time that will execute - a mod loader, a plugin pack -
+# is pinned by version and verified by sha256 before a single file is extracted.
+# An unpinned download is refused rather than downgraded to "latest".
+fetch_pinned() {
+    local url="$1"
+    local expected_sha="$2"
+    local destination="$3"
+
+    if [[ -z "${url}" || -z "${expected_sha}" ]]; then
+        log_error "fetch_pinned needs both a URL and a sha256"
+        log_error "Refusing to fetch an unpinned artifact"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "${destination}")"
+    rm -f "${destination}"
+
+    log_info "Fetching ${url}"
+    if ! curl -fsSL --retry 3 --retry-delay 5 -o "${destination}" "${url}"; then
+        log_error "Failed to fetch ${url}"
+        rm -f "${destination}"
+        return 1
+    fi
+
+    local actual
+    actual=$(sha256sum "${destination}" | cut -d' ' -f1)
+    if [[ "${actual}" != "${expected_sha}" ]]; then
+        log_error "Checksum mismatch, refusing to use ${destination}"
+        log_error "  expected: ${expected_sha}"
+        log_error "  actual:   ${actual}"
+        rm -f "${destination}"
+        return 1
+    fi
+
+    log_success "Verified ${destination}"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# SteamCMD helpers
+# -----------------------------------------------------------------------------
+steam_platform_args() {
+    if [[ "${STEAM_PLATFORM}" == "windows" ]]; then
+        echo "+@sSteamCmdForcePlatformType windows"
+    fi
+}
+
+get_installed_build_id() {
+    local manifest="${SERVER_PATH}/steamapps/appmanifest_${STEAM_APP_ID}.acf"
+    if [[ -f "${manifest}" ]]; then
+        grep -oP '"buildid"\s*"\K[^"]+' "${manifest}" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Asks Steam for the current build id on the configured branch without touching
+# the install. Prints an empty string when it cannot be determined; callers must
+# treat empty as "unknown", never as "no update".
+get_remote_build_id() {
+    local output
+    output=$(timeout 120 "${STEAMCMD_PATH}/steamcmd.sh" \
+        +login anonymous \
+        +app_info_update 1 \
+        +app_info_print "${STEAM_APP_ID}" \
+        +quit 2>/dev/null) || true
+
+    echo "${output}" | awk -v branch="\"${STEAM_BRANCH}\"" '
+        /"branches"/ { in_branches = 1 }
+        in_branches && $1 == branch { in_wanted = 1 }
+        in_wanted && /"buildid"/ { gsub(/"/, "", $2); print $2; exit }
+    '
+}
+
+# -----------------------------------------------------------------------------
+# Ports
+# -----------------------------------------------------------------------------
+# Used by the install guide generator and by the lint workflow, which fails when
+# the guide, the compose file and the registry disagree.
+public_port_list()  { echo "${PUBLIC_PORTS}" | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
+private_port_list() { echo "${PRIVATE_PORTS:-}" | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }

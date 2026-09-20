@@ -1,0 +1,34 @@
+# =============================================================================
+# Fast tier: shellcheck and the unit suites
+# =============================================================================
+# Every push. Under a minute, so a contributor gets a signal before they lose
+# the thread. Nothing merges on this tier alone.
+# =============================================================================
+
+name: Lint and unit
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # shellcheck is preinstalled on ubuntu-latest
+      - name: Shellcheck the scripts and tests
+        run: |
+          shellcheck --version
+          shellcheck -S error -s bash -x scripts/* tests/*.sh tests/unit/*.sh
+
+      - name: Unit suites
+        run: bash tests/run_unit.sh
