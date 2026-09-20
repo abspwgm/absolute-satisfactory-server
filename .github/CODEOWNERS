@@ -1,0 +1,9 @@
+# abspowergaming owns every path in this repository.
+#
+# The organization-wide ruleset (defined in abspwgm/absolute-game-servers, governance/)
+# does not require an approving review today: with a single owner account GitHub can
+# never satisfy one, because an author cannot approve their own pull request. CODEOWNERS
+# still requests the owner's review automatically and records who owns what, and it is
+# what the requirement re-arms against once the assistant pushes from its own machine
+# account.
+*   @abspowergaming
