@@ -1,0 +1,29 @@
+# Test compose: the same image the e2e suite builds, with smaller budgets.
+#
+# Ports: 7777/udp and 7777/tcp are the game and must be forwarded on your
+# router. 8888/tcp is the management API and is deliberately bound to localhost
+# only -- see docs/INSTALL.md for which ports to forward and which to keep
+# private.
+services:
+  satisfactory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: satisfactory-server
+    restart: "no"
+    # The shutdown ladder must stay ordered or the save is cut short:
+    #   STOP_TIMEOUT (120s) < supervisor stopwaitsecs (150s) < this (180s)
+    stop_grace_period: 180s
+    ports:
+      - "7777:7777/udp"
+      - "7777:7777/tcp"
+      - "127.0.0.1:8888:8888/tcp"
+    environment:
+      - SERVER_PORT=7777
+      - UPDATE_ON_START=true
+      - BACKUPS_ENABLED=true
+      - BACKUPS_MAX_COUNT=3
+      - TZ=Etc/UTC
+    volumes:
+      - ./data/server:/opt/satisfactory/server
+      - ./data/config:/config

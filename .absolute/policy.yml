@@ -2,12 +2,12 @@
 # A game repository generated from this template inherits this file and edits
 # it: the tiers and contract stay, the exceptions below are replaced by that
 # game's real answers.
-project: absolute-server-template
+project: absolute-satisfactory-server
 standard_version: "1.0.0"
 
 audience: >-
-  a maintainer adding a new game who has run one of our images but has never
-  read the shared library, and needs to know which decisions are theirs
+  someone who has never used Docker, a terminal or a router's settings page,
+  and wants a Satisfactory server their friends can join tonight
 
 contract:
   - The manifest.env field names and their accepted values
@@ -26,14 +26,12 @@ tiers:
     budget: under a second
   merge:
     gates: merge
-    command: shellcheck -S error -s bash -x scripts/* tests/*.sh tests/unit/*.sh && bash tests/run_unit.sh
-    budget: under a minute
+    command: bash tests/run_e2e.sh
+    budget: around 40 minutes on a cold world
   release:
     gates: release
-    command: bash tests/run_unit.sh
-    budget: >-
-      the release tier is the generated game repository's end-to-end suite;
-      this repository has no artifact of its own to release
+    command: bash tests/run_e2e.sh
+    budget: as long as the world takes to generate
 
 security:
   layers:
@@ -77,9 +75,7 @@ security:
           verified_by: tests/unit/test_pinned_fetch.sh
     L3:
       requirements:
-        base_image_from_approved_library:
-          status: exception
-          exception: no-container-layer-yet
+        base_image_from_approved_library: Dockerfile
         least_privilege_tokens: .github/workflows/lint.yml
         no_secrets_in_build_args: .github/workflows/lint.yml
         ephemeral_runners: .github/workflows/lint.yml
@@ -89,27 +85,21 @@ security:
     L4:
       requirements:
         provenance_and_sbom_attached:
-          status: not_applicable
-          reason: Nothing is published from here; the template is consumed as source.
+          status: exception
+          exception: not-published-yet
         only_distributable_content:
-          status: not_applicable
-          reason: No artifact is produced.
+          status: exception
+          exception: not-published-yet
         published_only_after_merge_tier:
-          status: not_applicable
-          reason: No artifact is produced.
+          status: exception
+          exception: not-published-yet
     L5:
       requirements:
-        least_privilege_runtime:
-          status: exception
-          exception: no-container-layer-yet
-        admin_interfaces_private:
-          status: exception
-          exception: no-container-layer-yet
+        least_privilege_runtime: config/supervisord.conf
+        admin_interfaces_private: docker-compose.yml
         default_credentials_refused: tests/unit/test_credentials.sh
         fail_closed_on_state_destroying_paths: tests/unit/test_manifest.sh
-        honest_health_reporting:
-          status: exception
-          exception: no-container-layer-yet
+        honest_health_reporting: scripts/healthcheck
       controls:
         - id: manifest-fails-closed
           description: >-
@@ -134,36 +124,42 @@ security:
       requirements:
         snapshot_before_risk:
           status: exception
-          exception: no-container-layer-yet
+          exception: no-disaster-response-yet
         hold_on_failed_verification:
           status: exception
-          exception: no-container-layer-yet
+          exception: no-disaster-response-yet
         restore_rehearsed_in_ci:
           status: exception
-          exception: no-container-layer-yet
-        retention_exercised_by_test:
-          status: exception
-          exception: no-container-layer-yet
+          exception: no-disaster-response-yet
+        retention_exercised_by_test: tests/e2e/test_backup.sh
     L7:
       requirements:
         scheduled_canary:
           status: exception
-          exception: no-container-layer-yet
+          exception: no-build-watch-yet
         one_issue_per_failure_class:
           status: exception
-          exception: no-container-layer-yet
+          exception: no-build-watch-yet
         security_policy_published: SECURITY.md
         findings_kept_private: SECURITY.md
 
 exceptions:
-  - id: no-container-layer-yet
+  - id: no-disaster-response-yet
     reason: >-
-      This repository currently holds the shared library, the manifest and the
-      fast tier. The container layer - Dockerfile, compose files, the five
-      shared end-to-end tests, the disaster drill, publish and build-watch -
-      lands with the first real game generated from the template, because the
-      standard does not let a thing be called proven until a suite has passed on
-      it, and a template with no game cannot run that suite. Every requirement
-      citing this exception is answered by the generated repository today, and
-      will be answered here once the first game proves the layer.
+      There is no snapshot, hold or rollback here yet. This game was chosen
+      first precisely because it needs them - ficsit.app mods break on game
+      updates - so the generic recovery CLI lands in the shared library rather
+      than being written for Satisfactory alone and copied afterwards.
+    expires: "2027-03-31"
+  - id: no-build-watch-yet
+    reason: >-
+      Nothing boots this image against today's Steam build on a schedule, so
+      "it still works" has no date on it. build-watch is a shared reusable
+      workflow in the hub's plan rather than a per-game copy.
+    expires: "2027-03-31"
+  - id: not-published-yet
+    reason: >-
+      No image is published from this repository, so there is nothing yet to
+      attach provenance to or to scan. The first publish waits on a green e2e
+      run, which is also what closes the two UNVERIFIED values in manifest.env.
     expires: "2027-03-31"

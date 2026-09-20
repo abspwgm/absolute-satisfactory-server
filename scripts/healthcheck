@@ -1,0 +1,38 @@
+#!/bin/bash
+# =============================================================================
+# Is this server actually usable?
+# =============================================================================
+# Deliberately not "is a process present". A crash-looping server has a process
+# most of the time, which is how a container reports healthy for forty-five
+# minutes while never once coming up
+# (abspwgm/absolute-rust-server#12). Health here means the game is running AND
+# the port it serves on answers.
+#
+# A server that is holding or degraded says so rather than reporting healthy:
+# the standard's L5 requires honest health reporting, and an operator who is
+# told "healthy" stops looking.
+set -uo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/common" 2>/dev/null || exit 1
+
+if is_update_hold; then
+    echo "UNHEALTHY: updates are held; run the recovery CLI to see why"
+    exit 1
+fi
+
+if ! is_server_running; then
+    echo "UNHEALTHY: ${SERVER_PROCESS} is not running"
+    exit 1
+fi
+
+# The game port answering is the closest thing to "a player could join".
+port="${SERVER_PORT:-7777}"
+if command -v ss >/dev/null 2>&1; then
+    if ! ss -lun 2>/dev/null | grep -q ":${port}\b"; then
+        echo "UNHEALTHY: nothing is listening on ${port}/udp"
+        exit 1
+    fi
+fi
+
+echo "HEALTHY: ${SERVER_PROCESS} is running and ${port}/udp is bound"
+exit 0

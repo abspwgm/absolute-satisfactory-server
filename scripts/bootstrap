@@ -1,0 +1,43 @@
+#!/bin/bash
+# =============================================================================
+# Container entry point: prepare, then hand over to supervisor.
+# =============================================================================
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+
+log_info "=========================================="
+log_info "${GAME_NAME} (app ${STEAM_APP_ID})"
+log_info "=========================================="
+
+install -d -m 0755 "${SERVER_PATH}" "${CONFIG_PATH}" "${LOG_PATH}" "${PID_PATH}" "${DR_PATH}"
+chown -R "${GAME_ID}:${GAME_ID}" "${SERVER_PATH}" "${CONFIG_PATH}" "${LOG_PATH}" "${PID_PATH}" 2>/dev/null || true
+
+if [[ -n "${TZ:-}" && -f "/usr/share/zoneinfo/${TZ}" ]]; then
+    ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime
+    echo "${TZ}" > /etc/timezone
+fi
+
+# The credential guard is a no-op for games with no admin password variable.
+resolve_admin_credential || log_warn "Could not resolve the admin credential"
+
+if is_true "${UPDATE_ON_START:-true}"; then
+    "${SCRIPTS_PATH}/updater" || log_warn "Update failed; starting with whatever is installed"
+else
+    log_info "UPDATE_ON_START is false; skipping the update"
+fi
+
+if [[ ! -x "${SERVER_EXECUTABLE}" ]]; then
+    log_error "No server binary at ${SERVER_EXECUTABLE} and no way to get one"
+    exit 1
+fi
+
+if is_true "${BACKUPS_ENABLED:-true}"; then
+    cron_line="${BACKUPS_CRON:-0 * * * *}"
+    echo "${cron_line} ${SCRIPTS_PATH}/backup >> ${LOG_PATH}/backup.log 2>&1" \
+        | crontab -u "${GAME_ID}" -
+    log_info "Backups scheduled: ${cron_line}"
+fi
+
+log_info "Handing over to supervisor"
+exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

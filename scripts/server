@@ -1,0 +1,44 @@
+#!/bin/bash
+# =============================================================================
+# Start the game server, and become it.
+# =============================================================================
+# This script execs the binary rather than launching it in the background.
+# That is the whole point: supervisor's startsecs, startretries, autorestart
+# and stopsignal then apply to the game process, and a stop signal reaches the
+# game rather than a shell sitting in a sleep loop.
+#
+# Nothing is piped, either. The game writes to stdout, supervisor forwards that
+# to the container's stdout, and `docker logs` shows what the server actually
+# said - to an operator during an incident, and to the e2e suite.
+set -euo pipefail
+
+source "$(dirname "${BASH_SOURCE[0]}")/common"
+
+if [[ ! -x "${SERVER_EXECUTABLE}" ]]; then
+    log_error "Server binary not found or not executable: ${SERVER_EXECUTABLE}"
+    log_error "The updater should have installed it; refusing to start."
+    exit 1
+fi
+
+cd "${SERVER_PATH}"
+
+# Satisfactory takes its settings from the saved config and the command line.
+# Ports come from the manifest so the value the server binds and the value the
+# health check probes cannot drift apart.
+args=(
+    "-Port=${SERVER_PORT:-7777}"
+    "-log"
+    "-unattended"
+)
+
+if [[ -n "${SERVER_EXTRA_ARGS:-}" ]]; then
+    # Deliberately unquoted: the operator supplies a list of arguments.
+    # shellcheck disable=SC2206
+    args+=(${SERVER_EXTRA_ARGS})
+fi
+
+log_info "Starting ${GAME_NAME} on port ${SERVER_PORT:-7777}"
+log_info "Arguments: ${args[*]}"
+
+# exec: this shell is replaced, so the PID supervisor tracks is the game's.
+exec "${SERVER_EXECUTABLE}" "${args[@]}"
