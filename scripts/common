@@ -104,6 +104,19 @@ get_server_pid() {
     fi
 }
 
+# True when something has bound <port>/udp. Read straight from the kernel's
+# socket table: no image in this family installs iproute2, so the `ss` probe
+# that stood here was skipped by its own `command -v ss` guard and health meant
+# only "a process exists" - the thing the healthcheck says it must not mean.
+# /proc/net/udp lists each socket's local address as HEXIP:HEXPORT in column 2.
+# udp6 is absent on a host with IPv6 disabled, so it is read only if present.
+udp_port_bound() {
+    local tables=(/proc/net/udp)
+    [[ -r /proc/net/udp6 ]] && tables+=(/proc/net/udp6)
+    awk -v suffix=":$(printf '%04X' "$1")" \
+        'toupper($2) ~ (suffix "$") { found = 1 } END { exit !found }' "${tables[@]}"
+}
+
 # -----------------------------------------------------------------------------
 # Credential guard
 # -----------------------------------------------------------------------------

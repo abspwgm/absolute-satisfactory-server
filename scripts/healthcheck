@@ -26,12 +26,11 @@ if ! is_server_running; then
 fi
 
 # The game port answering is the closest thing to "a player could join".
-port="${SERVER_PORT:-7777}"
-if command -v ss >/dev/null 2>&1; then
-    if ! ss -lun 2>/dev/null | grep -q ":${port}\b"; then
-        echo "UNHEALTHY: nothing is listening on ${port}/udp"
-        exit 1
-    fi
+# Falls back to the manifest's first public port, never a literal from another game.
+port="${SERVER_PORT:-${PUBLIC_PORTS%%/*}}"
+if ! udp_port_bound "${port}"; then
+    echo "UNHEALTHY: nothing is listening on ${port}/udp"
+    exit 1
 fi
 
 echo "HEALTHY: ${SERVER_PROCESS} is running and ${port}/udp is bound"
