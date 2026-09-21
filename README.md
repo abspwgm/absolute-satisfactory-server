@@ -3,7 +3,7 @@
 A containerized dedicated server for **Satisfactory**, built from
 [absolute-server-template](https://github.com/abspwgm/absolute-server-template)
 and conforming to the
-[Absolute engineering standard](https://github.com/abspwgm/.github).
+Absolute engineering standard.
 
 **New to this? Start here: [docs/INSTALL.md](docs/INSTALL.md)** — written for
 someone who has never used Docker, a terminal or a router's settings page.

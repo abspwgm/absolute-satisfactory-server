@@ -25,6 +25,7 @@ example file.
 ## Standard
 
 This repository conforms to the
-[Absolute engineering standard](https://github.com/abspwgm/.github).
+Absolute engineering standard; the check that enforces it is vendored under
+[`.absolute/standard/`](.absolute/standard/PROVENANCE.md).
 Its answers, including its open exceptions, are in
 [`.absolute/policy.yml`](.absolute/policy.yml).
