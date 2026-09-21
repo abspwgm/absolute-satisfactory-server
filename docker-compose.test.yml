@@ -9,6 +9,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # The tag e2e.yml builds. Without it compose names the image after the
+    # project and only builds when that name is missing, so on the persistent
+    # self-hosted runner every run reused the first image it ever built: PR #1's
+    # run 35642688843 started the pre-PR launcher, not the code under test.
+    image: absolute-satisfactory-server:test
     container_name: satisfactory-server
     restart: "no"
     # The shutdown ladder must stay ordered or the save is cut short:
