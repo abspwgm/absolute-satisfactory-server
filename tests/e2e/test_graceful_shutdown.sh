@@ -40,7 +40,15 @@ else
     log_warn "No confirmation of the save on request; the save on disk is checked below"
 fi
 
-before="$(find "${SAVED_DIR}" -name '*.sav' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)"
+# Not the backup test's fixture: that file is written by a test, moments
+# earlier, and matching it would pass this check on a server that saved
+# nothing. It nearly did - the last run "found" a save that was the fixture.
+newest_real_save() {
+    find "${SAVED_DIR}" -name '*.sav' ! -name 'e2e-backup-fixture.sav' \
+        -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1
+}
+
+before="$(newest_real_save)"
 log_info "Newest save before the stop: ${before:-<none>}"
 started_at="$(date +%s)"
 
@@ -68,7 +76,7 @@ fi
 
 # The save must be on disk, and no older than the run: a stop that writes
 # nothing is the failure this test exists for.
-after="$(find "${SAVED_DIR}" -name '*.sav' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)"
+after="$(newest_real_save)"
 log_info "Newest save after the stop: ${after:-<none>}"
 if [[ -z "${after}" ]]; then
     log_fail "No save file exists under ${SAVED_DIR} after a stop"

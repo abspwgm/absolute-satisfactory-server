@@ -15,7 +15,7 @@ MAX=3   # BACKUPS_MAX_COUNT in docker-compose.test.yml
 log_test_start "backup"
 
 # Give the backup something to find, so the run is not a no-op.
-docker exec "${CONTAINER}" sh -c 'mkdir -p /config/saved && echo world > /config/saved/e2e.sav'
+docker exec "${CONTAINER}" sh -c 'mkdir -p /config/saved && echo world > /config/saved/e2e-backup-fixture.sav'
 
 for i in $(seq 1 $((MAX + 2))); do
     if ! docker exec "${CONTAINER}" /opt/satisfactory/scripts/backup >/dev/null 2>&1; then

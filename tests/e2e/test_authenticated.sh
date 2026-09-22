@@ -109,16 +109,19 @@ fi
 
 # 4. Create the world. Only an administrator may, and without it there is no
 #    game to join, so this doubles as an admin-only action that changes state.
-# The server answers this one only once the world exists, and generating it
-# takes minutes; the first run waited 300s and got no answer at all while every
-# read answered at once. So the request is judged by its effect below - a world
-# that is running - and a lost connection is reported, not failed on.
+# The field names are the ones the server's own API specification uses, in its
+# casing: newGameData, sessionName. Two runs sent the wiki's capitalised
+# spelling and the request hung - 900s with no answer, no error, and nothing in
+# the server's log to say a world had begun. The documented answer is an
+# immediate 202 Accepted; the map then loads, and the API is documented as
+# unavailable while it does. So a short timeout is right, and the world is
+# still judged by its effect below rather than by the connection surviving.
 if api CreateNewGame "$(jq -nc --arg s "${SESSION_NAME}" \
-        '{NewGameData: {SessionName: $s, MapName: "", StartingLocation: "", bSkipOnboarding: true, AdvancedGameSettings: {}}}')" \
-        "${admin_token}" "${CREATE_TIMEOUT:-900}"; then
-    log_pass "Created the world '${SESSION_NAME}' with the admin session"
+        '{newGameData: {sessionName: $s, mapName: "", startingLocation: "", bSkipOnboarding: true, advancedGameSettings: {}, customOptionsOnlyForModding: {}}}')" \
+        "${admin_token}" "${CREATE_TIMEOUT:-120}"; then
+    log_pass "The server accepted the request to create '${SESSION_NAME}' (HTTP ${API_STATUS})"
 elif [[ "${API_STATUS}" == "000" ]]; then
-    log_info "No answer to the create request within the wait; checking whether the world came up anyway"
+    log_info "No answer to the create request; the API is unavailable while a map loads, so the world is checked for below"
 else
     log_fail "Creating the world was refused (HTTP ${API_STATUS}): ${API_BODY:0:200}"
     failed=1
@@ -131,6 +134,13 @@ while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
     if api QueryServerState '{}' "" 15; then
         running="$(jq -r '.data.serverGameState.isGameRunning // false' <<< "${API_BODY}")"
         [[ "${running}" == "true" ]] && break
+    fi
+    # Every two minutes, what the server itself says. A world that is loading
+    # prints LogLoad and LogWorld lines; a request that never reached the game
+    # prints nothing at all, which is the difference worth seeing.
+    if (( waited % 120 == 0 )); then
+        log_info "Waiting for the world (${waited}s). The server's last words:"
+        docker logs "${CONTAINER}" --tail 5 2>&1 | grep -iE "log(load|world|game|server)" | tail -3 || true
     fi
     sleep 15
     waited=$((waited + 15))
