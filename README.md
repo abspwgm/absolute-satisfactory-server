@@ -13,7 +13,7 @@ someone who has never used Docker, a terminal or a router's settings page.
 ```yaml
 services:
   satisfactory:
-    image: ghcr.io/abspwgm/absolute-satisfactory-server:latest
+    image: abspwgm/absolute-satisfactory-server:latest
     container_name: satisfactory-server
     restart: unless-stopped
     stop_grace_period: 180s
@@ -66,7 +66,7 @@ means "players can join".
 
 Open exceptions are recorded with dates in
 [`.absolute/policy.yml`](.absolute/policy.yml): no snapshot/hold/rollback yet,
-no scheduled build watch, and no published image. The remaining work is in
+no scheduled build watch, and no image vulnerability scan. The remaining work is in
 [CHECKLIST.md](CHECKLIST.md).
 
 ## Licence

@@ -46,7 +46,7 @@ Create a file called `docker-compose.yml` in that folder, and paste this in:
 ```yaml
 services:
   satisfactory:
-    image: ghcr.io/abspwgm/absolute-satisfactory-server:latest
+    image: abspwgm/absolute-satisfactory-server:latest
     container_name: satisfactory-server
     restart: unless-stopped
     stop_grace_period: 180s
