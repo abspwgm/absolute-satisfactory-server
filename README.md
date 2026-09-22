@@ -66,7 +66,7 @@ means "players can join".
 
 Open exceptions are recorded with dates in
 [`.absolute/policy.yml`](.absolute/policy.yml): no snapshot/hold/rollback yet,
-no scheduled build watch, and no published image. The remaining work is in
+no scheduled build watch, and no image vulnerability scan. The remaining work is in
 [CHECKLIST.md](CHECKLIST.md).
 
 ## Licence
