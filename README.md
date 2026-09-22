@@ -13,7 +13,7 @@ someone who has never used Docker, a terminal or a router's settings page.
 ```yaml
 services:
   satisfactory:
-    image: ghcr.io/abspwgm/absolute-satisfactory-server:latest
+    image: abspwgm/absolute-satisfactory-server:latest
     container_name: satisfactory-server
     restart: unless-stopped
     stop_grace_period: 180s

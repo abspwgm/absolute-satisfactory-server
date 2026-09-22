@@ -62,10 +62,8 @@ security:
           verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
           reason: The branch ruleset blocks direct pushes, so a pin moves only through a reviewed PR.
         vulnerable_dependencies_block_release:
-          status: not_applicable
-          reason: >-
-            This repository publishes no artifact. The generated game repository
-            answers this for the image it ships.
+          status: exception
+          exception: no-image-scan-yet
       controls:
         - id: unpinned-fetch-refused
           description: >-
@@ -79,20 +77,12 @@ security:
         least_privilege_tokens: .github/workflows/lint.yml
         no_secrets_in_build_args: .github/workflows/lint.yml
         ephemeral_runners: .github/workflows/lint.yml
-        fork_pr_cannot_publish:
-          status: not_applicable
-          reason: This repository publishes no artifact, so there is nothing to protect.
+        fork_pr_cannot_publish: .github/workflows/publish.yml
     L4:
       requirements:
-        provenance_and_sbom_attached:
-          status: exception
-          exception: not-published-yet
-        only_distributable_content:
-          status: exception
-          exception: not-published-yet
-        published_only_after_merge_tier:
-          status: exception
-          exception: not-published-yet
+        provenance_and_sbom_attached: .github/workflows/publish.yml
+        only_distributable_content: Dockerfile
+        published_only_after_merge_tier: .github/workflows/publish.yml
     L5:
       requirements:
         least_privilege_runtime: config/supervisord.conf
@@ -157,9 +147,9 @@ exceptions:
       "it still works" has no date on it. build-watch is a shared reusable
       workflow in the hub's plan rather than a per-game copy.
     expires: "2027-03-31"
-  - id: not-published-yet
+  - id: no-image-scan-yet
     reason: >-
-      No image is published from this repository, so there is nothing yet to
-      attach provenance to or to scan. The first publish waits on a green e2e
-      run, which is also what closes the two UNVERIFIED values in manifest.env.
+      The image is published (publish.yml), but nothing scans it for known
+      vulnerabilities before release. Game files are downloaded at run time and
+      are not in the image, so the scan covers the Debian base and our scripts.
     expires: "2027-03-31"
