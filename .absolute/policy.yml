@@ -71,6 +71,15 @@ security:
             deletes a mismatching download before anything can use it. Every
             game image inherits this, so no game can quietly fetch "latest".
           verified_by: tests/unit/test_pinned_fetch.sh
+        - id: pins-are-kept-current
+          description: >-
+            Pinning is half the control; the other half is that a pin moves.
+            Every action SHA and the base image digest are carried forward by a
+            weekly grouped Dependabot pull request rather than by someone
+            remembering. The test fails when a kind of dependency appears in
+            the tree that no ecosystem covers, so this repository cannot
+            quietly fall out of cover.
+          verified_by: tests/unit/test_dependabot.sh
     L3:
       requirements:
         base_image_from_approved_library: Dockerfile
