@@ -275,3 +275,81 @@ get_remote_build_id() {
 # the guide, the compose file and the registry disagree.
 public_port_list()  { echo "${PUBLIC_PORTS}" | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
 private_port_list() { echo "${PRIVATE_PORTS:-}" | tr ',' '\n' | tr -d ' ' | grep -v '^$'; }
+
+# -----------------------------------------------------------------------------
+# The server's own HTTPS API
+# -----------------------------------------------------------------------------
+# Satisfactory's dedicated server answers on the game port over TLS, at
+# /api/v1, with one POST that names a function:
+#   {"function": "QueryServerState", "data": {...}}
+# The certificate is the server's own self-signed one, so the connection is
+# unverified on purpose; it is a loopback call inside the container, and the
+# alternative is no state at all. Nothing else in the image talks to that port.
+#
+# HealthCheck and QueryServerState need no token. Anything that changes the
+# server - SaveGame - needs an Administrator token, which the API mints from
+# the admin password the operator set when they claimed the server in game.
+# ADMIN_PASSWORD is optional here for that reason: unset, the state reads still
+# work and the writes are simply not available (a caller must say what it does
+# without one), which is the honest reading of "unknown", not "nothing".
+
+api_port() { echo "${SERVER_PORT:-7777}"; }
+# API_URL exists so tests/unit/test_api.sh can point these functions at a fake
+# server; nothing in the image ever sets it.
+api_url()  { echo "${API_URL:-https://127.0.0.1:$(api_port)/api/v1}"; }
+
+# api_call <function> [data-json] [token] [timeout] ; the response body on a 2xx
+api_call() {
+    local fn="$1" data="${2:-{\}}" token="${3:-}" timeout="${4:-15}"
+    local body code auth=()
+    [[ -n "${token}" ]] && auth=(-H "Authorization: Bearer ${token}")
+    body="$(mktemp)"
+    code="$(curl -sk -m "${timeout}" -X POST "$(api_url)" \
+        -H 'Content-Type: application/json' "${auth[@]}" \
+        --data "$(printf '{"function":"%s","data":%s}' "${fn}" "${data}")" \
+        -o "${body}" -w '%{http_code}')" || true
+    if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
+        cat "${body}"
+        rm -f "${body}"
+        return 0
+    fi
+    log_warn "The server's API answered HTTP ${code:-000} for ${fn}: $(head -c 200 "${body}" 2>/dev/null)" >&2
+    rm -f "${body}"
+    return 1
+}
+
+# admin_token ; an Administrator token, or nothing when there is no password to
+# log in with. A claimed server has one; an unclaimed one has no admin at all.
+admin_token() {
+    local password="${ADMIN_PASSWORD:-}" response
+    [[ -n "${password}" ]] || return 1
+    response="$(api_call PasswordLogin \
+        "$(printf '{"MinimumPrivilegeLevel":"Administrator","Password":"%s"}' "${password}")")" || return 1
+    jq -r '.data.authenticationToken // empty' <<< "${response}" | grep . || return 1
+}
+
+# get_player_count ; how many players are connected, or nothing if unknown.
+# Unknown is not zero (standard 2.8): a caller that cannot tell must hold.
+get_player_count() {
+    local response count
+    response="$(api_call QueryServerState)" || return 1
+    count="$(jq -r '.data.serverGameState.numConnectedPlayers // empty' <<< "${response}")"
+    [[ "${count}" =~ ^[0-9]+$ ]] || return 1
+    echo "${count}"
+}
+
+# is_server_idle ; 0 nobody is on, 1 players are on, 2 cannot tell.
+is_server_idle() {
+    local count
+    count="$(get_player_count)" || return 2
+    [[ "${count}" -eq 0 ]]
+}
+
+# save_world <name> ; asks the server to write a save and waits for its answer.
+# Needs an admin token, so it is only possible on a claimed server.
+save_world() {
+    local name="${1:-absolute}" token
+    token="$(admin_token)" || { log_warn "No admin token: the server has no ADMIN_PASSWORD set, or it was refused"; return 1; }
+    api_call SaveGame "$(printf '{"SaveName":"%s"}' "${name}")" "${token}" 120 >/dev/null || return 1
+    log_success "The server confirmed it saved '${name}'"
+}

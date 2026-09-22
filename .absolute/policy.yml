@@ -33,6 +33,32 @@ tiers:
     command: bash tests/run_e2e.sh
     budget: as long as the world takes to generate
 
+ready_ladder:
+  up: server_start - the process stays up and binds the game port
+  reachable: >-
+    server_query - both game ports are bound and the server's own HTTPS API
+    answers a health check from outside the container, over the published port
+  discoverable: >-
+    discoverable - Satisfactory has no server browser: a player adds a server
+    by address and their client then asks that address what it is. The rung is
+    that question, QueryServerState, answered with a running game, a session
+    name and a player limit, and the player count it advertises matches the one
+    the image's own helper reads. There is no list to be listed in, so this is
+    the whole of discoverable for this game.
+  authenticated: >-
+    authenticated - a fresh server has no admin and no world, so the suite does
+    what the first client does: passwordless login at InitialAdmin (which only
+    an unclaimed server grants), ClaimServer with an admin password,
+    PasswordLogin with that password, and CreateNewGame with the resulting
+    token. A wrong password must be refused. The token is the one the game's
+    own client gets, which is why this is a real session rather than a
+    stand-in; what it is not is a player joining the world, since no headless
+    Satisfactory client exists, and the verdict says so.
+  recoverable: >-
+    backup, graceful_shutdown, restart_update - a save on request, a container
+    that stops by itself rather than being killed (exit 137), a save on disk
+    afterwards, and a restart that comes back running the same session
+
 security:
   layers:
     L1:
