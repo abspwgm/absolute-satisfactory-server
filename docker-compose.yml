@@ -6,7 +6,7 @@
 # private.
 services:
   satisfactory:
-    image: abspwgm/absolute-satisfactory-server:latest
+    image: abspowergaming/absolute-satisfactory-server:latest
     container_name: satisfactory-server
     restart: unless-stopped
     # The shutdown ladder must stay ordered or the save is cut short:
