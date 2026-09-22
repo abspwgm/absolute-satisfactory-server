@@ -350,6 +350,14 @@ is_server_idle() {
 save_world() {
     local name="${1:-absolute}" token
     token="$(admin_token)" || { log_warn "No admin token: the server has no ADMIN_PASSWORD set, or it was refused"; return 1; }
-    api_call SaveGame "$(printf '{"SaveName":"%s"}' "${name}")" "${token}" 120 >/dev/null || return 1
+    # A save of a large world outlasts a short timeout, and the server answers
+    # only when it has finished: the first e2e run got no answer at all (HTTP
+    # 000) from a 120s wait while every read answered at once. A caller that
+    # needs certainty checks the save on disk; this waits a long time and says
+    # plainly when it gave up waiting rather than when the save failed.
+    if ! api_call SaveGame "$(printf '{"SaveName":"%s"}' "${name}")" "${token}" "${SAVE_TIMEOUT:-600}" >/dev/null; then
+        log_warn "No answer to the save request; the server may still be writing it"
+        return 1
+    fi
     log_success "The server confirmed it saved '${name}'"
 }

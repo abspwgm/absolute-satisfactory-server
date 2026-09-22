@@ -109,18 +109,25 @@ fi
 
 # 4. Create the world. Only an administrator may, and without it there is no
 #    game to join, so this doubles as an admin-only action that changes state.
+# The server answers this one only once the world exists, and generating it
+# takes minutes; the first run waited 300s and got no answer at all while every
+# read answered at once. So the request is judged by its effect below - a world
+# that is running - and a lost connection is reported, not failed on.
 if api CreateNewGame "$(jq -nc --arg s "${SESSION_NAME}" \
         '{NewGameData: {SessionName: $s, MapName: "", StartingLocation: "", bSkipOnboarding: true, AdvancedGameSettings: {}}}')" \
-        "${admin_token}" 300; then
+        "${admin_token}" "${CREATE_TIMEOUT:-900}"; then
     log_pass "Created the world '${SESSION_NAME}' with the admin session"
+elif [[ "${API_STATUS}" == "000" ]]; then
+    log_info "No answer to the create request within the wait; checking whether the world came up anyway"
 else
     log_fail "Creating the world was refused (HTTP ${API_STATUS}): ${API_BODY:0:200}"
     failed=1
 fi
 
-# The world takes a while to load; the session is what a player then sees.
+# The world takes a while to generate and load; the session is what a player
+# then sees, and this is now the test of whether the creation worked.
 waited=0
-while [[ ${waited} -lt ${DEADLINE} ]]; do
+while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
     if api QueryServerState '{}' "" 15; then
         running="$(jq -r '.data.serverGameState.isGameRunning // false' <<< "${API_BODY}")"
         [[ "${running}" == "true" ]] && break
@@ -131,7 +138,7 @@ done
 if [[ "${running:-false}" == "true" ]]; then
     log_pass "The server reports a running game after ${waited}s"
 else
-    log_fail "The world never started within ${DEADLINE}s of being created"
+    log_fail "The world never started within ${CREATE_DEADLINE:-1200}s of being created"
     docker logs "${CONTAINER}" --tail 40 2>&1 || true
     failed=1
 fi

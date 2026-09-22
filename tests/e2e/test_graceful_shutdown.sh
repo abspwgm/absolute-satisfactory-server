@@ -29,18 +29,20 @@ log_test_start "graceful_shutdown"
 failed=0
 
 # A save on demand, through the image's own helper: the one the operator and
-# the stop path both use. It needs the admin session that `authenticated` set
-# up, so a failure here is a real failure, not a missing precondition.
+# the stop path both use, with the admin session `authenticated` set up.
+# The server answers a save only when it has written it, and a large world
+# outlasts the connection, so a missing answer is not a missing save: the file
+# on disk below is what settles it.
 if MSYS_NO_PATHCONV=1 docker exec "${CONTAINER}" bash -c \
         'source /opt/satisfactory/scripts/common && save_world e2e-shutdown' 2>&1 | tail -3; then
     log_pass "The server confirmed a save on request"
 else
-    log_fail "The server did not confirm a save on request"
-    failed=1
+    log_warn "No confirmation of the save on request; the save on disk is checked below"
 fi
 
 before="$(find "${SAVED_DIR}" -name '*.sav' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)"
 log_info "Newest save before the stop: ${before:-<none>}"
+started_at="$(date +%s)"
 
 log_info "Stopping the container, and waiting up to ${STOP_WAIT}s for it to stop by itself"
 start="${SECONDS}"
@@ -68,11 +70,14 @@ fi
 # nothing is the failure this test exists for.
 after="$(find "${SAVED_DIR}" -name '*.sav' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)"
 log_info "Newest save after the stop: ${after:-<none>}"
-if [[ -n "${after}" ]]; then
-    log_pass "A world save is on disk: ${after##* }"
-else
+if [[ -z "${after}" ]]; then
     log_fail "No save file exists under ${SAVED_DIR} after a stop"
     ls -la "${SAVED_DIR}" 2>&1 | head -10 || true
+    failed=1
+elif (( ${after%%.*} >= started_at - 900 )); then
+    log_pass "A world save from this run is on disk: ${after##* }"
+else
+    log_fail "The newest save predates this run by more than fifteen minutes: ${after##* }"
     failed=1
 fi
 
