@@ -120,6 +120,7 @@ if api CreateNewGame "$(jq -nc --arg s "${SESSION_NAME}" \
         '{newGameData: {sessionName: $s, mapName: "", startingLocation: "", bSkipOnboarding: true, advancedGameSettings: {}, customOptionsOnlyForModding: {}}}')" \
         "${admin_token}" "${CREATE_TIMEOUT:-120}"; then
     log_pass "The server accepted the request to create '${SESSION_NAME}' (HTTP ${API_STATUS})"
+    log_info "The server said: ${API_BODY:-<empty body>}"
 elif [[ "${API_STATUS}" == "000" ]]; then
     log_info "No answer to the create request; the API is unavailable while a map loads, so the world is checked for below"
 else
@@ -135,12 +136,13 @@ while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
         running="$(jq -r '.data.serverGameState.isGameRunning // false' <<< "${API_BODY}")"
         [[ "${running}" == "true" ]] && break
     fi
-    # Every two minutes, what the server itself says. A world that is loading
-    # prints LogLoad and LogWorld lines; a request that never reached the game
-    # prints nothing at all, which is the difference worth seeing.
+    # Every two minutes, what the server itself says - unfiltered. The last
+    # run filtered these lines and printed nothing ten times in a row, which
+    # told us only that the filter was wrong.
     if (( waited % 120 == 0 )); then
-        log_info "Waiting for the world (${waited}s). The server's last words:"
-        docker logs "${CONTAINER}" --tail 5 2>&1 | grep -iE "log(load|world|game|server)" | tail -3 || true
+        log_info "Waiting for the world (${waited}s). The server's last five lines:"
+        docker logs "${CONTAINER}" --tail 5 2>&1 | sed 's/^/    /' || true
+        log_info "What the server says of itself: $(jq -c '.data.serverGameState // .' <<< "${API_BODY}" 2>/dev/null | cut -c1-200)"
     fi
     sleep 15
     waited=$((waited + 15))

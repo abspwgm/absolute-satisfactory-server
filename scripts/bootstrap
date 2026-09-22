@@ -13,6 +13,36 @@ log_info "=========================================="
 install -d -m 0755 "${SERVER_PATH}" "${CONFIG_PATH}" "${LOG_PATH}" "${PID_PATH}" "${DR_PATH}"
 chown -R "${GAME_ID}:${GAME_ID}" "${SERVER_PATH}" "${CONFIG_PATH}" "${LOG_PATH}" "${PID_PATH}" 2>/dev/null || true
 
+# Satisfactory writes its worlds to $HOME/.config/Epic/FactoryGame/Saved,
+# which is inside the image: a `docker compose pull` would take the operator's
+# world with it, and every backup so far archived an empty directory. The
+# e2e run of 2026-09-22 found it - the server's own log names that path while
+# SAVE_PATHS pointed at /config/saved, which nothing ever wrote to.
+#
+# The game's directory becomes a link into /config, which is the volume that
+# survives. An existing real directory is moved in first, so an operator who
+# already has a world does not lose it to this change.
+persist_game_saves() {
+    local home="/home/${GAME_ID}"
+    local game_saved="${home}/.config/Epic/FactoryGame/Saved"
+    local kept="${CONFIG_PATH}/saved"
+
+    install -d -m 0755 "${kept}"
+    install -d -m 0755 "$(dirname "${game_saved}")"
+
+    if [[ -d "${game_saved}" && ! -L "${game_saved}" ]]; then
+        log_info "Moving existing saves into ${kept}"
+        cp -a "${game_saved}/." "${kept}/" 2>/dev/null || true
+        rm -rf "${game_saved}"
+    fi
+
+    ln -sfn "${kept}" "${game_saved}"
+    chown -R "${GAME_ID}:${GAME_ID}" "${kept}" "${home}/.config" 2>/dev/null || true
+    log_info "Worlds are kept in ${kept} (the /config volume)"
+}
+
+persist_game_saves
+
 if [[ -n "${TZ:-}" && -f "/usr/share/zoneinfo/${TZ}" ]]; then
     ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime
     echo "${TZ}" > /etc/timezone
