@@ -76,7 +76,7 @@ else
 fi
 
 if [[ ${failed} -ne 0 ]]; then
-    docker logs "${CONTAINER}" --tail 40 2>&1 || true
+    dump_container_logs "${CONTAINER}" 40
     log_test_fail "server_query"
     exit 1
 fi

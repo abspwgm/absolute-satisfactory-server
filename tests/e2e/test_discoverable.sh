@@ -43,7 +43,7 @@ game_state="$(jq -c '.data.serverGameState // empty' <<< "${state}" 2>/dev/null)
 if [[ -z "${game_state}" ]]; then
     log_fail "The server did not say what it is when asked (QueryServerState)"
     log_info "Last answer: ${state:-<nothing>}"
-    docker logs "${CONTAINER}" --tail 40 2>&1 || true
+    dump_container_logs "${CONTAINER}" 40
     log_test_fail "discoverable"
     exit 1
 fi

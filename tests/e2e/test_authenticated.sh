@@ -82,7 +82,7 @@ waited=0
 until api HealthCheck '{"ClientCustomData":""}' "" 15; do
     if [[ ${waited} -ge ${DEADLINE} ]]; then
         log_fail "The server's API never answered within ${DEADLINE}s"
-        docker logs "${CONTAINER}" --tail 40 2>&1 || true
+        dump_container_logs "${CONTAINER}" 40
         log_test_fail "authenticated"
         exit 1
     fi
@@ -164,7 +164,7 @@ while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
     # told us only that the filter was wrong.
     if (( waited % 120 == 0 )); then
         log_info "Waiting for the world (${waited}s). The server's last five lines:"
-        docker logs "${CONTAINER}" --tail 5 2>&1 | sed 's/^/    /' || true
+        dump_container_logs "${CONTAINER}" 5 | sed 's/^/    /'
         log_info "What the server says of itself: $(jq -c '.data.serverGameState // .errorCode // .' <<< "${API_BODY}" 2>/dev/null | cut -c1-200)"
     fi
     sleep 15
@@ -174,7 +174,7 @@ if [[ "${running:-false}" == "true" ]]; then
     log_pass "The server reports a running game after ${waited}s: session '$(jq -r '.data.serverGameState.activeSessionName // ""' <<< "${API_BODY}")'"
 else
     log_fail "The world never started within ${CREATE_DEADLINE:-1200}s of being created"
-    docker logs "${CONTAINER}" --tail 40 2>&1 || true
+    dump_container_logs "${CONTAINER}" 40
     failed=1
 fi
 

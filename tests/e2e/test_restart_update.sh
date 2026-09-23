@@ -55,7 +55,7 @@ if [[ "${running}" == "true" ]]; then
     log_pass "The server is running a game again after ${waited}s"
 else
     log_fail "The server never reported a running game within ${DEADLINE}s of restarting"
-    docker logs "${CONTAINER}" --tail 40 2>&1 || true
+    dump_container_logs "${CONTAINER}" 40
     failed=1
 fi
 
