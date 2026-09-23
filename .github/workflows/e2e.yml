@@ -120,6 +120,18 @@ jobs:
           docker logs satisfactory-server > test-artifacts/container.log 2>&1 || true
           cp -r data/logs test-artifacts/ 2>/dev/null || true
 
+      # The ready-ladder verdict (standard 2.10), on its own so the fleet board's
+      # collector can read it without unpacking logs. Transport, not the record:
+      # the hub keeps the last conclusive verdict itself (2.11).
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verdict
+          path: data/logs/verdict.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

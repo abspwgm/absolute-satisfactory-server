@@ -25,6 +25,10 @@ services:
       - "127.0.0.1:8888:8888/tcp"
     environment:
       - SERVER_PORT=7777
+      # The password the suite claims the server with, and the one the image
+      # logs in with to save the world before it stops. A real deployment sets
+      # this to the password the operator chose when they claimed the server.
+      - ADMIN_PASSWORD=e2e-admin-pw
       - UPDATE_ON_START=true
       - BACKUPS_ENABLED=true
       - BACKUPS_MAX_COUNT=3

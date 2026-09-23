@@ -40,6 +40,30 @@ if is_update_hold; then
     exit 0
 fi
 
+# An update restarts the server under whoever is playing. When the server is
+# already running, wait for it to be empty first - and an unknown count is not
+# an empty one (standard 2.8): a server that will not say how many players are
+# on is a server to leave alone. On a cold start there is nothing to disturb,
+# so the wait is skipped and the install runs.
+if is_true "${UPDATE_IF_IDLE:-true}" && is_server_running; then
+    deadline=$(( SECONDS + ${UPDATE_IDLE_TIMEOUT:-1800} ))
+    while true; do
+        is_server_idle
+        case $? in
+            0) break ;;
+            1) reason="players are connected" ;;
+            *) reason="the server did not say how many players are connected" ;;
+        esac
+        if (( SECONDS >= deadline )); then
+            log_warn "Holding the update: ${reason}, and the wait ran out. Nothing was changed."
+            exit 0
+        fi
+        log_info "Waiting to update: ${reason}"
+        sleep "${UPDATE_IDLE_POLL:-60}"
+    done
+    log_info "The server is empty; updating now"
+fi
+
 log_info "Updating ${GAME_NAME} (app ${STEAM_APP_ID}, branch ${STEAM_BRANCH})"
 if install_server; then
     get_installed_build_id > "${SERVER_PATH}/.build_id" 2>/dev/null || true

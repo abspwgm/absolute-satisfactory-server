@@ -51,6 +51,8 @@ while. `docker ps` shows `(healthy)` when players can join.
 |---|---|---|
 | `SERVER_PORT` | `7777` | Game port |
 | `UPDATE_ON_START` | `true` | Take the newest game build when the container starts |
+| `UPDATE_IF_IDLE` | `true` | Wait for the server to be empty before updating a running server |
+| `ADMIN_PASSWORD` | (empty) | The admin password you set when you claimed the server in game. With it, updates wait for an empty server and the world can be saved on demand; without it, the server is still asked to stop gently, but nobody can ask it to save |
 | `BACKUPS_ENABLED` | `true` | Hourly world backups |
 | `BACKUPS_MAX_COUNT` | `10` | How many backups to keep |
 | `SERVER_EXTRA_ARGS` | (empty) | Extra arguments passed to the server |
