@@ -131,15 +131,16 @@ fi
 #    game to join, so this doubles as an admin-only action that changes state.
 # The field names are the API's own, in its casing: NewGameData, SessionName,
 # and bSkipOnboarding - the specification writes SkipOnboarding and notes that
-# the server only reads it with the b. Sent in lower camel case, the server
-# answers "missing_params", with HTTP 200, which the first ladder run
-# (35791204112) took for acceptance and then waited twenty minutes on. The two
-# runs before it sent these names and got no answer at all, which is what a
-# request that succeeds looks like here: the map begins loading and the
-# connection goes with it. So the timeout is short, and the world is judged
-# below by its effect, never by whether this connection survived.
+# the server only reads it with the b. And every field the specification
+# calls optional is sent, empty: left out, the server answers "missing_params"
+# (run 35863391953), the same answer it gives the lower camel case spelling
+# (run 35791204112, which took the HTTP 200 it came with for acceptance and
+# waited twenty minutes). The two runs before those sent exactly this and got
+# no answer at all, which is what success looks like here: the map begins
+# loading and the connection goes with it. So the timeout is short, and the
+# world is judged below by its effect, never by whether this call answered.
 if api CreateNewGame "$(jq -nc --arg s "${SESSION_NAME}" \
-        '{NewGameData: {SessionName: $s, bSkipOnboarding: true}}')" \
+        '{NewGameData: {SessionName: $s, MapName: "", StartingLocation: "", bSkipOnboarding: true, AdvancedGameSettings: {}}}')" \
         "${admin_token}" "${CREATE_TIMEOUT:-60}"; then
     log_pass "The server accepted the request to create '${SESSION_NAME}' (HTTP ${API_STATUS})"
     log_info "The server said: ${API_BODY:-<empty body>}"
