@@ -91,7 +91,7 @@ fi
 
 # What the server said on the way out, kept for the next reader either way.
 log_info "The last lines before it stopped:"
-docker logs "${CONTAINER}" --tail 15 2>&1 || true
+dump_container_logs "${CONTAINER}" 15
 
 if [[ ${failed} -ne 0 ]]; then
     log_test_fail "graceful_shutdown"
