@@ -8,6 +8,11 @@
 # never reported as zero. A guard that reads "nobody is on" from a server it
 # cannot reach updates the game under the players standing in it (2.8).
 #
+# The fake copies two habits of the real server that its status codes hide,
+# both from the first ready-ladder run (35791204112): a refusal can come with
+# HTTP 200 and an errorCode for a body, and the state is not readable without
+# a token - a query without one is "insufficient_scope", not an answer.
+#
 # The fake speaks plain HTTP; the real one speaks TLS. API_URL exists for that.
 set -uo pipefail
 
@@ -49,20 +54,26 @@ FAKE_PID=""
 FAKE_PORT=""
 stop_fake() { [[ -n "${FAKE_PID}" ]] && kill "${FAKE_PID}" 2>/dev/null; FAKE_PID=""; }
 
-# start_fake <players|none> ; a server that answers QueryServerState with that
-# player count ("none" leaves the field out), PasswordLogin only for the right
-# password, and SaveGame only with a bearer token. It records every request in
-# ${WORK_DIR}/requests.log.
+# start_fake <players|none> [client-password] ; a server that answers
+# QueryServerState with that player count ("none" leaves the field out) to a
+# bearer token only, grants a Client token to a passwordless login unless a
+# client password is set, PasswordLogin only for the right password, and
+# SaveGame only with the admin token. Its refusals come the way the real
+# server's do: some with HTTP 200 and an errorCode, some with a 4xx. It records
+# every request in ${WORK_DIR}/requests.log.
 start_fake() {
-    local players="$1"
+    local players="$1" client_password="${2:-}"
     stop_fake
     FAKE_PORT="$("${PYTHON}" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-    PLAYERS="${players}" REQUESTS="${WORK_DIR}/requests.log" "${PYTHON}" - "${FAKE_PORT}" <<'PY' &
+    PLAYERS="${players}" CLIENT_PASSWORD="${client_password}" REQUESTS="${WORK_DIR}/requests.log" \
+        "${PYTHON}" - "${FAKE_PORT}" <<'PY' &
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PLAYERS = os.environ["PLAYERS"]
+CLIENT_PASSWORD = os.environ.get("CLIENT_PASSWORD", "")
 REQUESTS = os.environ["REQUESTS"]
+TOKENS = ("Bearer tok-client", "Bearer tok-admin")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -81,17 +92,25 @@ class Handler(BaseHTTPRequestHandler):
 
         function = request.get("function")
         data = request.get("data") or {}
+        if function == "HealthCheck":
+            return self.send(200, {"data": {"health": "healthy"}})
+        if function == "PasswordlessLogin":
+            if CLIENT_PASSWORD:
+                return self.send(200, {"errorCode": "passwordless_login_not_possible"})
+            return self.send(200, {"data": {"authenticationToken": "tok-client"}})
+        if function == "PasswordLogin":
+            if data.get("Password") == "right-password":
+                return self.send(200, {"data": {"authenticationToken": "tok-admin"}})
+            return self.send(200, {"errorCode": "wrong_password"})
         if function == "QueryServerState":
+            if auth not in TOKENS:
+                return self.send(200, {"errorCode": "insufficient_scope"})
             state = {"isGameRunning": True, "playerLimit": 4, "activeSessionName": "Fake"}
             if PLAYERS != "none":
                 state["numConnectedPlayers"] = int(PLAYERS)
             return self.send(200, {"data": {"serverGameState": state}})
-        if function == "PasswordLogin":
-            if data.get("Password") == "right-password":
-                return self.send(200, {"data": {"authenticationToken": "tok-123"}})
-            return self.send(401, {"errorCode": "wrong_password"})
         if function == "SaveGame":
-            if auth == "Bearer tok-123":
+            if auth == "Bearer tok-admin":
                 return self.send(204, None)
             return self.send(403, {"errorCode": "insufficient_scope"})
         return self.send(404, {"errorCode": "unknown_function"})
@@ -127,52 +146,75 @@ load_common() {
     source "${PROJECT_DIR}/scripts/common"
 }
 
+check() {
+    local name="$1"
+    shift
+    if "$@"; then
+        log_pass "${name}"
+    else
+        log_fail "${name}"
+        CHECKS_FAILED=$((CHECKS_FAILED + 1))
+    fi
+}
+
 # --- a server with players on -------------------------------------------------
 start_fake 2
-( load_common "right-password"; [[ "$(get_player_count)" == "2" ]] ) \
-    && log_pass "a live player count is read" || { log_fail "a live player count is read"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "a live player count is read" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; [[ \"\$(get_player_count)\" == 2 ]]"
 
-( load_common "right-password"; is_server_idle; [[ $? -eq 1 ]] ) \
-    && log_pass "players on means not idle" || { log_fail "players on means not idle"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "the state is read with a player's token, not anonymously" \
+    grep -qE '"function": "QueryServerState".*"auth": "Bearer tok-client"' "${WORK_DIR}/requests.log"
 
-( load_common "right-password"; save_world e2e >/dev/null 2>&1 ) \
-    && log_pass "a save is confirmed when the token is accepted" || { log_fail "a save is confirmed when the token is accepted"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "players on means not idle" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; is_server_idle; [[ \$? -eq 1 ]]"
 
-( load_common ""; ! save_world e2e >/dev/null 2>&1 ) \
-    && log_pass "no admin password means no save, rather than a silent one" || { log_fail "no admin password means no save, rather than a silent one"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "a save is confirmed when the token is accepted" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; save_world e2e >/dev/null 2>&1"
 
-( load_common "wrong-password"; ! admin_token >/dev/null 2>&1 ) \
-    && log_pass "a refused login yields no token" || { log_fail "a refused login yields no token"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "no admin password means no save, rather than a silent one" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common ''; ! save_world e2e >/dev/null 2>&1"
+
+check "a refused login yields no token, even when the refusal comes with HTTP 200" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common wrong-password; ! admin_token >/dev/null 2>&1"
+
+check "a state query without a token is a refusal, not an answer" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common ''; ! api_call QueryServerState >/dev/null 2>&1"
 
 # --- a server nobody is on ----------------------------------------------------
 start_fake 0
-( load_common "right-password"; is_server_idle ) \
-    && log_pass "an empty server is idle" || { log_fail "an empty server is idle"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "an empty server is idle" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; is_server_idle"
+
+# --- a server with a client password ------------------------------------------
+# A player's game cannot log in without it, so the count comes from the
+# administrator - or, with no admin password either, from nobody.
+start_fake 3 secret
+check "with a client password and no admin password, the count is unknown, not zero" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common ''; is_server_idle 2>/dev/null; [[ \$? -eq 2 ]]"
+
+check "with a client password, the administrator reads the count" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; [[ \"\$(get_player_count 2>/dev/null)\" == 3 ]]"
 
 # --- a server that will not say -----------------------------------------------
 start_fake none
-( load_common "right-password"; ! get_player_count >/dev/null 2>&1 ) \
-    && log_pass "a missing count is not a count" || { log_fail "a missing count is not a count"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "a missing count is not a count" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; ! get_player_count >/dev/null 2>&1"
 
-( load_common "right-password"; is_server_idle; [[ $? -eq 2 ]] ) \
-    && log_pass "an unknown count is unknown (2), never idle (0)" || { log_fail "an unknown count is unknown (2), never idle (0)"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "an unknown count is unknown (2), never idle (0)" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; is_server_idle 2>/dev/null; [[ \$? -eq 2 ]]"
 
 # --- an unreachable server ----------------------------------------------------
 stop_fake
-( load_common "right-password"; ! get_player_count >/dev/null 2>&1 ) \
-    && log_pass "an unreachable server yields no count" || { log_fail "an unreachable server yields no count"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "an unreachable server yields no count" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; ! get_player_count >/dev/null 2>&1"
 
-( load_common "right-password"; is_server_idle; [[ $? -eq 2 ]] ) \
-    && log_pass "an unreachable server is unknown, not empty" || { log_fail "an unreachable server is unknown, not empty"; CHECKS_FAILED=$((CHECKS_FAILED + 1)); }
+check "an unreachable server is unknown, not empty" \
+    bash -c "$(declare -f load_common); WORK_DIR='${WORK_DIR}' MANIFEST='${MANIFEST}' PROJECT_DIR='${PROJECT_DIR}' API_URL='${API_URL}'; load_common right-password; is_server_idle 2>/dev/null; [[ \$? -eq 2 ]]"
 
 # --- the password never reaches a command line --------------------------------
 # It is passed to curl in the request body, so it is not in /proc/<pid>/cmdline
 # for anything on the host to read.
-if grep -qE 'curl[^|]*(-u |--user)' "${PROJECT_DIR}/scripts/common"; then
-    log_fail "the password travels in the request body, not as a curl argument"
-    CHECKS_FAILED=$((CHECKS_FAILED + 1))
-else
-    log_pass "the password travels in the request body, not as a curl argument"
-fi
+check "the password travels in the request body, not as a curl argument" \
+    bash -c "! grep -qE 'curl[^|]*(-u |--user)' '${PROJECT_DIR}/scripts/common'"
 
 finish "api (unit)"

@@ -286,22 +286,36 @@ private_port_list() { echo "${PRIVATE_PORTS:-}" | tr ',' '\n' | tr -d ' ' | grep
 # unverified on purpose; it is a loopback call inside the container, and the
 # alternative is no state at all. Nothing else in the image talks to that port.
 #
-# HealthCheck and QueryServerState need no token. Anything that changes the
-# server - SaveGame - needs an Administrator token, which the API mints from
-# the admin password the operator set when they claimed the server in game.
-# ADMIN_PASSWORD is optional here for that reason: unset, the state reads still
-# work and the writes are simply not available (a caller must say what it does
-# without one), which is the honest reading of "unknown", not "nothing".
+# Two things about this API that its status codes get wrong, both learned from
+# the first ready-ladder run (35791204112):
+#
+# - A refusal can arrive as HTTP 200, with {"errorCode": ...} for a body and
+#   nothing else. That run read "missing_params" as a world being created. So
+#   the body is the answer here: a 2xx carrying an errorCode is a refusal.
+# - Only HealthCheck needs no token. QueryServerState needs at least a Client
+#   one, and the same run was answered "insufficient_scope" ten times over
+#   before anyone read the body. A player's game gets its Client token by
+#   PasswordlessLogin, which the server grants while it has no client password;
+#   an operator who set one has also set ADMIN_PASSWORD, and an Administrator
+#   token reads state too. With neither, the count is unknown - and unknown is
+#   not zero (standard 2.8).
+#
+# Anything that changes the server - SaveGame - needs an Administrator token,
+# which the API mints from the admin password the operator set when they
+# claimed the server in game. ADMIN_PASSWORD is optional here for that reason:
+# unset, the writes are simply not available, and a caller must say what it
+# does without one.
 
 api_port() { echo "${SERVER_PORT:-7777}"; }
 # API_URL exists so tests/unit/test_api.sh can point these functions at a fake
 # server; nothing in the image ever sets it.
 api_url()  { echo "${API_URL:-https://127.0.0.1:$(api_port)/api/v1}"; }
 
-# api_call <function> [data-json] [token] [timeout] ; the response body on a 2xx
+# api_call <function> [data-json] [token] [timeout] ; the response body on a
+# 2xx that is not a refusal
 api_call() {
     local fn="$1" data="${2:-{\}}" token="${3:-}" timeout="${4:-15}"
-    local body code auth=()
+    local body code auth=() refusal
     [[ -n "${token}" ]] && auth=(-H "Authorization: Bearer ${token}")
     body="$(mktemp)"
     code="$(curl -sk -m "${timeout}" -X POST "$(api_url)" \
@@ -309,13 +323,25 @@ api_call() {
         --data "$(printf '{"function":"%s","data":%s}' "${fn}" "${data}")" \
         -o "${body}" -w '%{http_code}')" || true
     if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
-        cat "${body}"
+        refusal="$(jq -r '.errorCode // empty' "${body}" 2>/dev/null)"
+        if [[ -z "${refusal}" ]]; then
+            cat "${body}"
+            rm -f "${body}"
+            return 0
+        fi
+        log_warn "The server refused ${fn}: ${refusal} (sent with HTTP ${code})" >&2
         rm -f "${body}"
-        return 0
+        return 1
     fi
     log_warn "The server's API answered HTTP ${code:-000} for ${fn}: $(head -c 200 "${body}" 2>/dev/null)" >&2
     rm -f "${body}"
     return 1
+}
+
+# token_in <login-answer> ; the token it carries, or nothing. The field's case
+# has moved between builds, so both spellings are read.
+token_in() {
+    jq -r '.data.authenticationToken // .data.AuthenticationToken // empty' <<< "${1:-}" | grep . || return 1
 }
 
 # admin_token ; an Administrator token, or nothing when there is no password to
@@ -325,14 +351,30 @@ admin_token() {
     [[ -n "${password}" ]] || return 1
     response="$(api_call PasswordLogin \
         "$(printf '{"MinimumPrivilegeLevel":"Administrator","Password":"%s"}' "${password}")")" || return 1
-    jq -r '.data.authenticationToken // empty' <<< "${response}" | grep . || return 1
+    token_in "${response}"
+}
+
+# client_token ; the token a player's game gets on joining a server with no
+# client password, or nothing when the server has one.
+client_token() {
+    local response
+    response="$(api_call PasswordlessLogin '{"MinimumPrivilegeLevel":"Client"}')" || return 1
+    token_in "${response}"
+}
+
+# state_token ; a token that may read the server's state: a player's, or the
+# administrator's on a server that takes a client password. Nothing with
+# neither, and then the state is unknown.
+state_token() {
+    client_token 2>/dev/null || admin_token
 }
 
 # get_player_count ; how many players are connected, or nothing if unknown.
 # Unknown is not zero (standard 2.8): a caller that cannot tell must hold.
 get_player_count() {
-    local response count
-    response="$(api_call QueryServerState)" || return 1
+    local token response count
+    token="$(state_token)" || return 1
+    response="$(api_call QueryServerState '{}' "${token}")" || return 1
     count="$(jq -r '.data.serverGameState.numConnectedPlayers // empty' <<< "${response}")"
     [[ "${count}" =~ ^[0-9]+$ ]] || return 1
     echo "${count}"

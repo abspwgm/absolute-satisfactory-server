@@ -6,9 +6,15 @@
 # =============================================================================
 # Satisfactory has no server browser. A player adds a server by address, and
 # the client then asks that address what it is - QueryServerState over the
-# same HTTPS API, no credentials needed. That answer is what the player sees
-# in their server manager, so answering it correctly is this game's whole
-# meaning of "discoverable": there is no list to be listed in.
+# same HTTPS API, with the Client token a passwordless login grants while the
+# server has no client password. That answer is what the player sees in their
+# server manager, so answering it correctly is this game's whole meaning of
+# "discoverable": there is no list to be listed in.
+#
+# The token is not optional. Asked without one, the server answers
+# "insufficient_scope" - with HTTP 200, and no serverGameState - which the
+# first ladder run (35791204112) reported as "the server did not say what it
+# is". It had said something; the question was wrong.
 #
 # The count the server advertises is cross-checked against the one the image's
 # own helper reads, so two independent views of one fact have to agree - the
@@ -27,9 +33,7 @@ log_test_start "discoverable"
 state=""
 waited=0
 while [[ ${waited} -lt ${DEADLINE} ]]; do
-    state="$(curl -sk -m 15 -X POST "https://127.0.0.1:${PORT}/api/v1" \
-        -H 'Content-Type: application/json' \
-        --data '{"function":"QueryServerState","data":{}}' 2>/dev/null)" || true
+    state="$(host_server_state)" || true
     [[ -n "$(jq -r '.data.serverGameState // empty' <<< "${state}" 2>/dev/null)" ]] && break
     sleep 15
     waited=$((waited + 15))

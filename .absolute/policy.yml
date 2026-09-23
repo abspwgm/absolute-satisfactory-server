@@ -41,8 +41,9 @@ ready_ladder:
   discoverable: >-
     discoverable - Satisfactory has no server browser: a player adds a server
     by address and their client then asks that address what it is. The rung is
-    that question, QueryServerState, answered with a running game, a session
-    name and a player limit, and the player count it advertises matches the one
+    that question, QueryServerState, asked with the Client token a passwordless
+    login grants and answered with a running game, a session name and a player
+    limit, and the player count it advertises matches the one
     the image's own helper reads. There is no list to be listed in, so this is
     the whole of discoverable for this game.
   authenticated: >-

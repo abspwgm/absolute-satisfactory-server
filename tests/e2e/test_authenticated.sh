@@ -36,7 +36,8 @@ SERVER_NAME="Absolute E2E"
 SESSION_NAME="E2E Session"
 DEADLINE="${API_DEADLINE:-600}"
 
-# api <function> <data-json> [token] [timeout] ; body on 2xx, nothing otherwise
+# api <function> <data-json> [token] [timeout] ; 0 on a 2xx that is not a
+# refusal, with API_STATUS, API_BODY and API_ERROR set either way
 api() {
     local fn="$1" data="$2" token="${3:-}" timeout="${4:-30}" auth=() body code
     [[ -n "${token}" ]] && auth=(-H "Authorization: Bearer ${token}")
@@ -48,12 +49,31 @@ api() {
     API_STATUS="${code:-000}"
     API_BODY="$(cat "${body}" 2>/dev/null)"
     rm -f "${body}"
-    [[ "${API_STATUS}" =~ ^2[0-9][0-9]$ ]]
+    # A refusal can come with HTTP 200 and an errorCode for a body: the first
+    # ladder run (35791204112) read one as a world being created. The body is
+    # the answer.
+    API_ERROR="$(jq -r '.errorCode // empty' <<< "${API_BODY}" 2>/dev/null)"
+    [[ "${API_STATUS}" =~ ^2[0-9][0-9]$ && -z "${API_ERROR}" ]]
 }
 
 # Tokens come back as authenticationToken; the field's case has moved between
 # builds, so both spellings are accepted rather than failing on a capital A.
 token_of() { jq -r '.data.authenticationToken // .data.AuthenticationToken // empty' <<< "$1"; }
+
+# The state as a joining player's game reads it: a Client token first, which a
+# passwordless login grants while the server has no client password, then the
+# question. Without the token the server answers "insufficient_scope" - with
+# HTTP 200 and no state - which the first ladder run took for silence, ten
+# times over. The admin token from below is the fallback, since it reads state
+# too. A fresh token each time: it costs one call and outlives any map load.
+query_state() {
+    local token=""
+    if api PasswordlessLogin '{"MinimumPrivilegeLevel":"Client"}' "" 15; then
+        token="$(token_of "${API_BODY}")"
+    fi
+    [[ -n "${token}" ]] || token="${admin_token:-}"
+    api QueryServerState '{}' "${token}" 15
+}
 
 log_test_start "authenticated"
 
@@ -109,22 +129,24 @@ fi
 
 # 4. Create the world. Only an administrator may, and without it there is no
 #    game to join, so this doubles as an admin-only action that changes state.
-# The field names are the ones the server's own API specification uses, in its
-# casing: newGameData, sessionName. Two runs sent the wiki's capitalised
-# spelling and the request hung - 900s with no answer, no error, and nothing in
-# the server's log to say a world had begun. The documented answer is an
-# immediate 202 Accepted; the map then loads, and the API is documented as
-# unavailable while it does. So a short timeout is right, and the world is
-# still judged by its effect below rather than by the connection surviving.
+# The field names are the API's own, in its casing: NewGameData, SessionName,
+# and bSkipOnboarding - the specification writes SkipOnboarding and notes that
+# the server only reads it with the b. Sent in lower camel case, the server
+# answers "missing_params", with HTTP 200, which the first ladder run
+# (35791204112) took for acceptance and then waited twenty minutes on. The two
+# runs before it sent these names and got no answer at all, which is what a
+# request that succeeds looks like here: the map begins loading and the
+# connection goes with it. So the timeout is short, and the world is judged
+# below by its effect, never by whether this connection survived.
 if api CreateNewGame "$(jq -nc --arg s "${SESSION_NAME}" \
-        '{newGameData: {sessionName: $s, mapName: "", startingLocation: "", bSkipOnboarding: true, advancedGameSettings: {}, customOptionsOnlyForModding: {}}}')" \
-        "${admin_token}" "${CREATE_TIMEOUT:-120}"; then
+        '{NewGameData: {SessionName: $s, bSkipOnboarding: true}}')" \
+        "${admin_token}" "${CREATE_TIMEOUT:-60}"; then
     log_pass "The server accepted the request to create '${SESSION_NAME}' (HTTP ${API_STATUS})"
     log_info "The server said: ${API_BODY:-<empty body>}"
 elif [[ "${API_STATUS}" == "000" ]]; then
     log_info "No answer to the create request; the API is unavailable while a map loads, so the world is checked for below"
 else
-    log_fail "Creating the world was refused (HTTP ${API_STATUS}): ${API_BODY:0:200}"
+    log_fail "Creating the world was refused (HTTP ${API_STATUS}): ${API_ERROR:-${API_BODY:0:200}}"
     failed=1
 fi
 
@@ -132,7 +154,7 @@ fi
 # then sees, and this is now the test of whether the creation worked.
 waited=0
 while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
-    if api QueryServerState '{}' "" 15; then
+    if query_state; then
         running="$(jq -r '.data.serverGameState.isGameRunning // false' <<< "${API_BODY}")"
         [[ "${running}" == "true" ]] && break
     fi
@@ -142,13 +164,13 @@ while [[ ${waited} -lt ${CREATE_DEADLINE:-1200} ]]; do
     if (( waited % 120 == 0 )); then
         log_info "Waiting for the world (${waited}s). The server's last five lines:"
         docker logs "${CONTAINER}" --tail 5 2>&1 | sed 's/^/    /' || true
-        log_info "What the server says of itself: $(jq -c '.data.serverGameState // .' <<< "${API_BODY}" 2>/dev/null | cut -c1-200)"
+        log_info "What the server says of itself: $(jq -c '.data.serverGameState // .errorCode // .' <<< "${API_BODY}" 2>/dev/null | cut -c1-200)"
     fi
     sleep 15
     waited=$((waited + 15))
 done
 if [[ "${running:-false}" == "true" ]]; then
-    log_pass "The server reports a running game after ${waited}s"
+    log_pass "The server reports a running game after ${waited}s: session '$(jq -r '.data.serverGameState.activeSessionName // ""' <<< "${API_BODY}")'"
 else
     log_fail "The world never started within ${CREATE_DEADLINE:-1200}s of being created"
     docker logs "${CONTAINER}" --tail 40 2>&1 || true

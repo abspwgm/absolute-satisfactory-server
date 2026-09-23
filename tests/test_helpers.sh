@@ -90,3 +90,32 @@ MANIFEST
         fi
     done
 }
+
+# -----------------------------------------------------------------------------
+# The server's API, from the host
+# -----------------------------------------------------------------------------
+# Two of the e2e tests ask the server what it is the way a joining player's
+# game does, independently of the image's own client in scripts/common, so that
+# two implementations have to agree. Both need a token: QueryServerState asked
+# without one is answered "insufficient_scope" - with HTTP 200, and no state -
+# which the first ladder run (35791204112) read as silence, ten times over.
+
+# host_api <function> [data-json] [token] ; the body, whatever the status
+host_api() {
+    local fn="$1" data="${2:-{\}}" token="${3:-}" auth=()
+    [[ -n "${token}" ]] && auth=(-H "Authorization: Bearer ${token}")
+    curl -sk -m 15 -X POST "https://127.0.0.1:${SERVER_PORT:-7777}/api/v1" \
+        -H 'Content-Type: application/json' "${auth[@]}" \
+        --data "$(printf '{"function":"%s","data":%s}' "${fn}" "${data}")" 2>/dev/null
+}
+
+# host_server_state ; QueryServerState as a joining player's game asks it: a
+# Client token from a passwordless login first, which the server grants while
+# it has no client password, then the question. Nothing when no token came.
+host_server_state() {
+    local token
+    token="$(host_api PasswordlessLogin '{"MinimumPrivilegeLevel":"Client"}' \
+        | jq -r '.data.authenticationToken // .data.AuthenticationToken // empty' 2>/dev/null)"
+    [[ -n "${token}" ]] || return 1
+    host_api QueryServerState '{}' "${token}"
+}

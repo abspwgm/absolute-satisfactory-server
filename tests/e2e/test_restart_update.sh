@@ -20,7 +20,6 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.test.yml"
 CONTAINER="satisfactory-server"
 PORT="${SERVER_PORT:-7777}"
-API="https://127.0.0.1:${PORT}/api/v1"
 EXPECTED_SESSION="E2E Session"
 DEADLINE="${RESTART_DEADLINE:-900}"
 
@@ -39,12 +38,11 @@ else
 fi
 
 # Wait for the API, which only answers once the server is up and the update
-# (UPDATE_ON_START) has finished.
+# (UPDATE_ON_START) has finished - and ask it as a player would, with a token.
 state=""
 waited=0
 while [[ ${waited} -lt ${DEADLINE} ]]; do
-    state="$(curl -sk -m 15 -X POST "${API}" -H 'Content-Type: application/json' \
-        --data '{"function":"QueryServerState","data":{}}' 2>/dev/null)" || true
+    state="$(host_server_state)" || true
     [[ "$(jq -r '.data.serverGameState.isGameRunning // false' <<< "${state}" 2>/dev/null)" == "true" ]] && break
     sleep 15
     waited=$((waited + 15))
