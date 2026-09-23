@@ -39,19 +39,79 @@ env:
   DOCKERHUB_IMAGE: docker.io/abspowergaming/${{ github.event.repository.name }}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Has this commit passed, ever?
+  # ---------------------------------------------------------------------------
+  # The gate used to be "did the run that woke me succeed". One self-hosted
+  # runner pool serves every repository and E2E is serialised per repository,
+  # so a queued run on main is cancelled whenever a newer run arrives. A
+  # cancelled run is not a failure and not a pass - but the old gate read it as
+  # "do not publish", silently, and the image for a commit that had genuinely
+  # passed never reached anyone. Four images were missing from Docker Hub for
+  # most of a day that way, and the hub's drift check was the only thing that
+  # noticed (absolute-game-servers, governance-drift).
+  #
+  # So this asks the question that matters: is there a successful E2E run for
+  # this exact commit? A commit that has never passed still cannot publish -
+  # the gate is not weakened, it is just asked properly.
+  gate:
+    name: Has this commit passed E2E?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - name: Look for a successful run of this commit
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          set -euo pipefail
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+          # workflow_run's `branches: [main]` matches by branch name, and a fork
+          # pull request from the fork's own `main` has head branch "main" too.
+          # Only a push to this repository may publish; otherwise a fork could
+          # have its code built and pushed with our tokens.
+          if [ "${EVENT}" = "workflow_run" ]; then
+            if [ "${RUN_EVENT}" != "push" ] || [ "${RUN_REPO}" != "${GITHUB_REPOSITORY}" ]; then
+              echo "Not a push to this repository (${RUN_EVENT} from ${RUN_REPO}); not publishing."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            # A tag or a manual dispatch is a deliberate act by someone who can
+            # already push here, and carries its own intent.
+            echo "Triggered by ${EVENT}; publishing."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          passed="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&status=success" \
+            --jq '[.workflow_runs[] | select(.name == "E2E Tests")] | length')"
+          if [ "${passed}" -gt 0 ]; then
+            echo "E2E has passed for ${SHA}; publishing."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No successful E2E run for ${SHA}; not publishing. A cancelled or failed run is not a pass."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
   ghcr:
     name: Publish to GHCR (private, testing)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # workflow_run's `branches: [main]` matches the run's head branch by name,
-    # and a fork pull request from the fork's own `main` has head branch "main"
-    # too. Only an E2E run triggered by a push to this repository publishes;
-    # otherwise a fork could have its code built and pushed with our tokens.
-    if: >-
-      github.event_name != 'workflow_run' || (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_repository.full_name == github.repository)
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
     permissions:
       contents: read
       packages: write
@@ -63,8 +123,9 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # workflow_run checks out the default branch head; pin to the commit
-          # whose E2E actually passed, so a later push is never published untested.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # the gate found a passing run for, so a later push is never
+          # published untested.
+          ref: ${{ needs.gate.outputs.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3

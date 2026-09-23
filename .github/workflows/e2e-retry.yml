@@ -1,0 +1,75 @@
+# =============================================================================
+# Start again when the queue cancels a run of main
+# =============================================================================
+# One self-hosted pool serves every repository, and E2E is serialised per
+# repository so two runs cannot fight over the same container names. GitHub
+# keeps a single queued run per concurrency group, so whenever a newer run
+# arrives - a dependabot branch, a pull request, anything - the run waiting on
+# main is cancelled.
+#
+# A cancelled run is not a failure. Nothing is red, nobody is told, and the
+# commit on main simply never gets a verdict: publishing is gated on a passing
+# run, so the image never ships, and the first sign of trouble is the hub's
+# drift check saying an image cannot be pulled. That is what happened to four
+# images for most of a day.
+#
+# So a cancelled run of main starts again, once the pool is free enough to take
+# it. Only main, only a push to this repository, only when that commit has no
+# passing run already, and at most a few attempts - a retry loop that cannot
+# stop is worse than the problem it fixes.
+name: Retry a cancelled E2E on main
+
+on:
+  workflow_run:
+    workflows: ["E2E Tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-retry-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    name: Start the cancelled run again
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event.workflow_run.conclusion == 'cancelled' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Retry, unless this commit has already passed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # Three attempts is enough to outlast a busy hour. Beyond that the
+          # problem is not the queue, and a loop would hide it.
+          if [ "${ATTEMPT}" -ge 3 ]; then
+            echo "::warning::Run ${RUN_ID} has been started ${ATTEMPT} times and keeps being cancelled. Leaving it; something other than the queue is wrong."
+            exit 0
+          fi
+
+          passed="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&status=success" \
+            --jq '[.workflow_runs[] | select(.name == "E2E Tests")] | length')"
+          if [ "${passed}" -gt 0 ]; then
+            echo "${SHA} already has a passing run; nothing to retry."
+            exit 0
+          fi
+
+          # The suite tears down its own containers, and the run that was
+          # cancelled never started one, so there is nothing to clean up first.
+          echo "Starting run ${RUN_ID} again (attempt $((ATTEMPT + 1)))."
+          gh run rerun "${RUN_ID}" --repo "${GITHUB_REPOSITORY}"
